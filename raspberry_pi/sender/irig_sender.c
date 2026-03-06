@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include <getopt.h>
 
+// BCM283x/BCM2711 GPIO register base addresses (Pi 1-4)
 #define BCM2708_PERI_BASE_RPI1  0x20000000
 #define BCM2708_PERI_BASE_RPI2  0x3F000000
 #define BCM2708_PERI_BASE_RPI4  0xFE000000
@@ -27,6 +28,7 @@
 
 #define BLOCK_SIZE (4*1024)
 
+// BCM283x/BCM2711 GPIO register offsets (Pi 1-4)
 #define GPFSEL0   0x00
 #define GPFSEL1   0x04
 #define GPFSEL2   0x08
@@ -34,9 +36,37 @@
 #define GPCLR0    0x28
 #define GPLEV0    0x34
 
+// RP1 GPIO register layout for Pi 5.
+// /dev/gpiomem0 maps three contiguous 64KB blocks:
+//   IO_BANK0  (0x00000): per-pin status/ctrl registers, 8 bytes per pin
+//   SYS_RIO0  (0x10000): fast register I/O with atomic SET/CLR variants
+//   PADS_BANK0(0x20000): pad drive/pull configuration
+#define RP1_GPIOMEM_SIZE        0x30000
+#define RP1_IO_BANK0_OFFSET     0x00000
+#define RP1_SYS_RIO0_OFFSET    0x10000
+#define RP1_PADS_BANK0_OFFSET  0x20000
+
+// Per-pin CTRL register in IO_BANK0 (bits 4:0 = FUNCSEL)
+#define RP1_GPIO_CTRL(pin)     (RP1_IO_BANK0_OFFSET + (pin) * 8 + 4)
+#define RP1_FSEL_SYS_RIO       5
+#define RP1_FSEL_NULL          0x1f
+
+// SYS_RIO0 register offsets (from SYS_RIO0 base)
+#define RP1_RIO_OUT            0x00
+#define RP1_RIO_OE             0x04
+#define RP1_RIO_IN             0x08
+
+// Atomic operation offsets (added to SYS_RIO0 base)
+#define RP1_SET_OFFSET         0x2000
+#define RP1_CLR_OFFSET         0x3000
+
+// Pad control register per pin (bit 7 = OD output disable)
+#define RP1_PADS_GPIO(pin)     (RP1_PADS_BANK0_OFFSET + 0x04 + (pin) * 4)
+
 #ifndef MOCK_GPIO
 static volatile unsigned *gpio_map = NULL;
 static int gpio_mem_fd = -1;
+static int pi_model_detected = 0;  // set by detect_pi_model(), used by gpio_* functions
 #endif
 
 typedef enum {
@@ -52,8 +82,10 @@ typedef struct {
 } double_array_t;
 
 #define SENDING_BIT_LENGTH 1.0
-// Offset to account for pin toggle latency (tuned via oscilloscope)
-#define OFFSET_NS 20000
+// Offset to account for pin toggle latency (tuned via oscilloscope).
+// Pi 5 has a faster CPU (Cortex-A76) so less overhead before the register write.
+#define OFFSET_NS_RPI4 20000
+#define OFFSET_NS_RPI5  9500
 // Sleep until this much time before target, then busy wait for precision.
 // Must exceed worst-case nanosleep jitter (1-10ms on macOS/Linux without RT;
 // <0.5ms on Linux with SCHED_FIFO). 10ms gives safe margin everywhere.
@@ -63,6 +95,7 @@ typedef struct {
 
 static const uint64_t NS_PER_SEC = 1000000000ULL;
 static uint64_t bit_length_ns;
+static uint64_t offset_ns;  // platform-dependent, set in init_timing_constants()
 
 static const int SECONDS_WEIGHTS[] = {1, 2, 4, 8, 10, 20, 40};
 static const int MINUTES_WEIGHTS[] = {1, 2, 4, 8, 10, 20, 40};
@@ -154,7 +187,9 @@ int detect_pi_model() {
     char model[256];
     if (fgets(model, sizeof(model), fp)) {
         fclose(fp);
-        if (strstr(model, "Raspberry Pi 4") || strstr(model, "Raspberry Pi 400")) {
+        if (strstr(model, "Raspberry Pi 5")) {
+            return 5;
+        } else if (strstr(model, "Raspberry Pi 4") || strstr(model, "Raspberry Pi 400")) {
             return 4;
         } else if (strstr(model, "Raspberry Pi 2") || strstr(model, "Raspberry Pi 3")) {
             return 2;
@@ -167,37 +202,59 @@ int detect_pi_model() {
 }
 
 int gpio_init() {
-    int pi_model = detect_pi_model();
-    unsigned gpio_base;
+    pi_model_detected = detect_pi_model();
 
-    switch (pi_model) {
-        case 1:
-            gpio_base = BCM2708_PERI_BASE_RPI1 + GPIO_BASE_OFFSET;
-            break;
-        case 4:
-            gpio_base = BCM2708_PERI_BASE_RPI4 + GPIO_BASE_OFFSET;
-            break;
-        default:
-            gpio_base = BCM2708_PERI_BASE_RPI2 + GPIO_BASE_OFFSET;
-            break;
+    if (pi_model_detected == 5) {
+        // Pi 5: RP1 GPIO via /dev/gpiomem0 (no root needed for mmap)
+        printf("Detected Raspberry Pi 5, using RP1 GPIO via /dev/gpiomem0\n");
+
+        gpio_mem_fd = open("/dev/gpiomem0", O_RDWR | O_SYNC);
+        if (gpio_mem_fd < 0) {
+            printf("Error: Cannot open /dev/gpiomem0: %s\n", strerror(errno));
+            return -1;
+        }
+
+        gpio_map = (volatile unsigned *)mmap(
+            NULL,
+            RP1_GPIOMEM_SIZE,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            gpio_mem_fd,
+            0
+        );
+    } else {
+        // Pi 1-4: BCM GPIO via /dev/mem
+        unsigned gpio_base;
+        switch (pi_model_detected) {
+            case 1:
+                gpio_base = BCM2708_PERI_BASE_RPI1 + GPIO_BASE_OFFSET;
+                break;
+            case 4:
+                gpio_base = BCM2708_PERI_BASE_RPI4 + GPIO_BASE_OFFSET;
+                break;
+            default:
+                gpio_base = BCM2708_PERI_BASE_RPI2 + GPIO_BASE_OFFSET;
+                break;
+        }
+
+        printf("Detected Raspberry Pi model %d, using GPIO base 0x%08X\n",
+               pi_model_detected, gpio_base);
+
+        gpio_mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
+        if (gpio_mem_fd < 0) {
+            printf("Error: Cannot open /dev/mem. Are you running as root?\n");
+            return -1;
+        }
+
+        gpio_map = (volatile unsigned *)mmap(
+            NULL,
+            BLOCK_SIZE,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            gpio_mem_fd,
+            gpio_base
+        );
     }
-
-    printf("Detected Raspberry Pi model %d, using GPIO base 0x%08X\n", pi_model, gpio_base);
-
-    gpio_mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
-    if (gpio_mem_fd < 0) {
-        printf("Error: Cannot open /dev/mem. Are you running as root?\n");
-        return -1;
-    }
-
-    gpio_map = (volatile unsigned *)mmap(
-        NULL,
-        BLOCK_SIZE,
-        PROT_READ | PROT_WRITE,
-        MAP_SHARED,
-        gpio_mem_fd,
-        gpio_base
-    );
 
     if (gpio_map == MAP_FAILED) {
         printf("Error: mmap failed: %s\n", strerror(errno));
@@ -211,7 +268,8 @@ int gpio_init() {
 
 void gpio_cleanup() {
     if (gpio_map != NULL && gpio_map != MAP_FAILED) {
-        munmap((void*)gpio_map, BLOCK_SIZE);
+        size_t map_size = (pi_model_detected == 5) ? RP1_GPIOMEM_SIZE : BLOCK_SIZE;
+        munmap((void*)gpio_map, map_size);
         gpio_map = NULL;
     }
     if (gpio_mem_fd >= 0) {
@@ -223,11 +281,24 @@ void gpio_cleanup() {
 void gpio_set_output(int pin) {
     if (gpio_map == NULL) return;
 
-    int reg = pin / 10;
-    int shift = (pin % 10) * 3;
+    if (pi_model_detected == 5) {
+        // RP1: set FUNCSEL to SYS_RIO in the per-pin CTRL register
+        volatile unsigned *ctrl = gpio_map + RP1_GPIO_CTRL(pin) / 4;
+        *ctrl = (*ctrl & ~0x1f) | RP1_FSEL_SYS_RIO;
 
-    *(gpio_map + reg) &= ~(7 << shift);
-    *(gpio_map + reg) |= (1 << shift);
+        // Ensure output driver is enabled (clear OD bit in pad register)
+        volatile unsigned *pad = gpio_map + RP1_PADS_GPIO(pin) / 4;
+        *pad &= ~(1 << 7);
+
+        // Set output enable via RIO atomic SET register
+        *(gpio_map + (RP1_SYS_RIO0_OFFSET + RP1_SET_OFFSET + RP1_RIO_OE) / 4) = (1 << pin);
+    } else {
+        // BCM (Pi 1-4): 3-bit function select, 10 pins per register
+        int reg = pin / 10;
+        int shift = (pin % 10) * 3;
+        *(gpio_map + reg) &= ~(7 << shift);
+        *(gpio_map + reg) |= (1 << shift);
+    }
 
     printf("GPIO %d set as output\n", pin);
 }
@@ -235,22 +306,40 @@ void gpio_set_output(int pin) {
 void gpio_write(int pin, int value) {
     if (gpio_map == NULL) return;
 
-    if (value) {
-        *(gpio_map + GPSET0/4) = 1 << pin;
+    if (pi_model_detected == 5) {
+        // RP1: use SYS_RIO0 atomic SET/CLR for the OUT register
+        if (value) {
+            *(gpio_map + (RP1_SYS_RIO0_OFFSET + RP1_SET_OFFSET + RP1_RIO_OUT) / 4) = 1 << pin;
+        } else {
+            *(gpio_map + (RP1_SYS_RIO0_OFFSET + RP1_CLR_OFFSET + RP1_RIO_OUT) / 4) = 1 << pin;
+        }
     } else {
-        *(gpio_map + GPCLR0/4) = 1 << pin;
+        // BCM (Pi 1-4): GPSET0/GPCLR0
+        if (value) {
+            *(gpio_map + GPSET0/4) = 1 << pin;
+        } else {
+            *(gpio_map + GPCLR0/4) = 1 << pin;
+        }
     }
 }
 
 // Cache GPIO registers for fast access.
 // When a pin is -1 (disabled), its mask is set to 0. Writing mask=0 to
-// GPSET0/GPCLR0 is a hardware no-op on BCM GPIO, so no guards are needed
-// in the hot path (ultra_fast_pulse).
+// SET/CLR registers is a hardware no-op on both BCM and RP1, so no guards
+// are needed in the hot path (ultra_fast_pulse).
 void init_gpio_cache(irig_h_sender_t *sender) {
     if (gpio_map == NULL) return;
 
-    sender->gpio_set_reg = gpio_map + GPSET0/4;
-    sender->gpio_clr_reg = gpio_map + GPCLR0/4;
+    if (pi_model_detected == 5) {
+        // RP1: SYS_RIO0 atomic SET/CLR registers for OUT
+        sender->gpio_set_reg = gpio_map + (RP1_SYS_RIO0_OFFSET + RP1_SET_OFFSET + RP1_RIO_OUT) / 4;
+        sender->gpio_clr_reg = gpio_map + (RP1_SYS_RIO0_OFFSET + RP1_CLR_OFFSET + RP1_RIO_OUT) / 4;
+    } else {
+        // BCM (Pi 1-4): GPSET0/GPCLR0
+        sender->gpio_set_reg = gpio_map + GPSET0/4;
+        sender->gpio_clr_reg = gpio_map + GPCLR0/4;
+    }
+
     sender->gpio_mask = (sender->sending_gpio_pin >= 0) ? (1 << sender->sending_gpio_pin) : 0;
     sender->inverted_gpio_mask = (sender->inverted_gpio_pin >= 0) ? (1 << sender->inverted_gpio_pin) : 0;
 }
@@ -561,6 +650,12 @@ void generate_irig_h_frame(irig_h_sender_t *sender, struct tm *time_info, irig_b
 
 void init_timing_constants(void) {
     bit_length_ns = (uint64_t)(SENDING_BIT_LENGTH * NS_PER_SEC);
+#ifndef MOCK_GPIO
+    offset_ns = (pi_model_detected == 5) ? OFFSET_NS_RPI5 : OFFSET_NS_RPI4;
+#else
+    offset_ns = OFFSET_NS_RPI4;
+#endif
+    printf("Pin toggle offset: %llu ns\n", (unsigned long long)offset_ns);
 }
 
 uint64_t timespec_to_ns(const struct timespec *ts) {
@@ -699,7 +794,7 @@ void precalculate_next_frame(irig_h_sender_t *sender, time_t target_second) {
     uint64_t frame_start_ns = (uint64_t)target_second * NS_PER_SEC;
     for (int i = 0; i < 60; i++) {
         sender->pulse_lengths[i] = calculate_pulse_length(sender->next_frame[i]);
-        sender->bit_start_times[i] = frame_start_ns + (i * NS_PER_SEC) - OFFSET_NS;
+        sender->bit_start_times[i] = frame_start_ns + (i * NS_PER_SEC) - offset_ns;
     }
 }
 
