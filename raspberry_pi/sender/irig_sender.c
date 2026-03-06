@@ -82,8 +82,10 @@ typedef struct {
 } double_array_t;
 
 #define SENDING_BIT_LENGTH 1.0
-// Offset to account for pin toggle latency (tuned via oscilloscope)
-#define OFFSET_NS 20000
+// Offset to account for pin toggle latency (tuned via oscilloscope).
+// Pi 5 has a faster CPU (Cortex-A76) so less overhead before the register write.
+#define OFFSET_NS_RPI4 20000
+#define OFFSET_NS_RPI5  9500
 // Sleep until this much time before target, then busy wait for precision.
 // Must exceed worst-case nanosleep jitter (1-10ms on macOS/Linux without RT;
 // <0.5ms on Linux with SCHED_FIFO). 10ms gives safe margin everywhere.
@@ -93,6 +95,7 @@ typedef struct {
 
 static const uint64_t NS_PER_SEC = 1000000000ULL;
 static uint64_t bit_length_ns;
+static uint64_t offset_ns;  // platform-dependent, set in init_timing_constants()
 
 static const int SECONDS_WEIGHTS[] = {1, 2, 4, 8, 10, 20, 40};
 static const int MINUTES_WEIGHTS[] = {1, 2, 4, 8, 10, 20, 40};
@@ -647,6 +650,12 @@ void generate_irig_h_frame(irig_h_sender_t *sender, struct tm *time_info, irig_b
 
 void init_timing_constants(void) {
     bit_length_ns = (uint64_t)(SENDING_BIT_LENGTH * NS_PER_SEC);
+#ifndef MOCK_GPIO
+    offset_ns = (pi_model_detected == 5) ? OFFSET_NS_RPI5 : OFFSET_NS_RPI4;
+#else
+    offset_ns = OFFSET_NS_RPI4;
+#endif
+    printf("Pin toggle offset: %llu ns\n", (unsigned long long)offset_ns);
 }
 
 uint64_t timespec_to_ns(const struct timespec *ts) {
@@ -785,7 +794,7 @@ void precalculate_next_frame(irig_h_sender_t *sender, time_t target_second) {
     uint64_t frame_start_ns = (uint64_t)target_second * NS_PER_SEC;
     for (int i = 0; i < 60; i++) {
         sender->pulse_lengths[i] = calculate_pulse_length(sender->next_frame[i]);
-        sender->bit_start_times[i] = frame_start_ns + (i * NS_PER_SEC) - OFFSET_NS;
+        sender->bit_start_times[i] = frame_start_ns + (i * NS_PER_SEC) - offset_ns;
     }
 }
 
