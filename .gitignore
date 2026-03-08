@@ -7,6 +7,9 @@ raspberry_pi/sender/irig_sender_mock
 # Test-generated data
 temp/
 
+# Benchmark results
+benchmark_results/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

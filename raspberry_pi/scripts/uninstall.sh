@@ -25,3 +25,4 @@ sudo rm -f /usr/local/bin/irig_sender
 
 # Remove compiled binary from local directory
 make -C "$REPO_DIR/sender" clean
+

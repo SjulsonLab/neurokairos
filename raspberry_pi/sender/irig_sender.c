@@ -112,6 +112,7 @@ static char mock_log_path[256] = "/tmp/irig_mock.csv";
 #endif
 
 static int max_frames = 0;  // 0 = unlimited
+static char latency_log_path[256] = "";  // empty = no latency logging
 
 typedef struct {
     int sending_gpio_pin;
@@ -131,6 +132,11 @@ typedef struct {
     volatile unsigned *gpio_clr_reg;
     uint32_t gpio_mask;
     uint32_t inverted_gpio_mask;
+
+    // Per-pulse latency logging (populated when --latency-log is set)
+    int64_t *pulse_latency_ns;     // actual onset - ideal second boundary
+    size_t pulse_count;
+    size_t pulse_capacity;
 
     // Chrony sync status (polled every ~60 seconds)
     int chrony_stratum;            // 0 = not synced, 1-15 = NTP stratum
@@ -662,6 +668,9 @@ uint64_t timespec_to_ns(const struct timespec *ts) {
     return (uint64_t)ts->tv_sec * NS_PER_SEC + (uint64_t)ts->tv_nsec;
 }
 
+// Wait until target_ns (CLOCK_MONOTONIC nanoseconds).
+// Uses hybrid sleep/busy-wait: sleeps until BUSY_WAIT_BUFFER_NS before
+// target, then spins for precision.
 void ultra_wait_until_ns(uint64_t target_ns) {
     struct timespec current_time;
     uint64_t current_ns;
@@ -674,7 +683,7 @@ void ultra_wait_until_ns(uint64_t target_ns) {
     static const uint64_t MAX_SLEEP_NS = 100000000ULL;  // 100ms
 
     while (running) {
-        clock_gettime(CLOCK_REALTIME, &current_time);
+        clock_gettime(CLOCK_MONOTONIC, &current_time);
         current_ns = timespec_to_ns(&current_time);
         remaining_ns = (int64_t)(target_ns - current_ns);
 
@@ -697,7 +706,7 @@ void ultra_wait_until_ns(uint64_t target_ns) {
         sleep_time.tv_sec = 0;
         sleep_time.tv_nsec = BUSY_WAIT_SLEEP_NS;
         do {
-            clock_gettime(CLOCK_REALTIME, &current_time);
+            clock_gettime(CLOCK_MONOTONIC, &current_time);
             current_ns = (uint64_t)current_time.tv_sec * NS_PER_SEC + (uint64_t)current_time.tv_nsec;
             if (current_ns < target_ns) {
                 nanosleep(&sleep_time, NULL);
@@ -705,7 +714,7 @@ void ultra_wait_until_ns(uint64_t target_ns) {
         } while (current_ns < target_ns && running);
     #else
         do {
-            clock_gettime(CLOCK_REALTIME, &current_time);
+            clock_gettime(CLOCK_MONOTONIC, &current_time);
             current_ns = (uint64_t)current_time.tv_sec * NS_PER_SEC + (uint64_t)current_time.tv_nsec;
         } while (current_ns < target_ns && running);
     #endif
@@ -720,12 +729,14 @@ double calculate_pulse_length(irig_bit_t bit) {
     }
 }
 
+// Generate a single pulse: set GPIO high, wait for pulse_duration_ns, set low.
+// Uses CLOCK_MONOTONIC for timing (immune to chrony adjustments).
 void ultra_fast_pulse(irig_h_sender_t *sender, uint64_t pulse_duration_ns) {
     struct timespec start_time, current_time, sleep_time;
     uint64_t start_ns, target_ns, current_ns;
     int64_t remaining_ns;
 
-    clock_gettime(CLOCK_REALTIME, &start_time);
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
     start_ns = timespec_to_ns(&start_time);
     target_ns = start_ns + pulse_duration_ns;
 
@@ -735,7 +746,7 @@ void ultra_fast_pulse(irig_h_sender_t *sender, uint64_t pulse_duration_ns) {
     static const uint64_t MAX_SLEEP_NS = 100000000ULL;  // 100ms
 
     while (running) {
-        clock_gettime(CLOCK_REALTIME, &current_time);
+        clock_gettime(CLOCK_MONOTONIC, &current_time);
         current_ns = timespec_to_ns(&current_time);
         remaining_ns = (int64_t)(target_ns - current_ns);
 
@@ -759,7 +770,7 @@ void ultra_fast_pulse(irig_h_sender_t *sender, uint64_t pulse_duration_ns) {
         poll_sleep.tv_nsec = BUSY_WAIT_SLEEP_NS;
 
         do {
-            clock_gettime(CLOCK_REALTIME, &current_time);
+            clock_gettime(CLOCK_MONOTONIC, &current_time);
             current_ns = (uint64_t)current_time.tv_sec * NS_PER_SEC + (uint64_t)current_time.tv_nsec;
             if (current_ns < target_ns) {
                 nanosleep(&poll_sleep, NULL);
@@ -767,7 +778,7 @@ void ultra_fast_pulse(irig_h_sender_t *sender, uint64_t pulse_duration_ns) {
         } while (current_ns < target_ns && running);
     #else
         do {
-            clock_gettime(CLOCK_REALTIME, &current_time);
+            clock_gettime(CLOCK_MONOTONIC, &current_time);
             current_ns = (uint64_t)current_time.tv_sec * NS_PER_SEC + (uint64_t)current_time.tv_nsec;
         } while (current_ns < target_ns && running);
     #endif
@@ -801,6 +812,8 @@ void precalculate_next_frame(irig_h_sender_t *sender, time_t target_second) {
 void* continuous_irig_sending(void *arg) {
     irig_h_sender_t *sender = (irig_h_sender_t*)arg;
     struct timespec current_time;
+    struct timespec mono_ts, real_ts;
+    int64_t rt_to_mono_offset_ns;
     time_t next_frame_time;
     int frames_sent = 0;
 
@@ -818,6 +831,14 @@ void* continuous_irig_sending(void *arg) {
     } else {
         printf("Set SCHED_FIFO with priority 80\n");
     }
+
+    // Lock all pages in RAM to prevent page faults during timing-critical path
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) < 0) {
+        printf("Warning: Could not lock memory: %s (continuing without mlockall)\n", strerror(errno));
+    } else {
+        printf("Memory locked with mlockall(MCL_CURRENT | MCL_FUTURE)\n");
+    }
+
 #endif
 
     printf("IRIG-H continuous transmission thread started\n");
@@ -839,7 +860,13 @@ void* continuous_irig_sending(void *arg) {
         memcpy(sender->current_frame, sender->next_frame, sizeof(sender->current_frame));
 
         for (int i = 0; i < 60 && sender->running && running; i++) {
-            ultra_wait_until_ns(sender->bit_start_times[i]);
+            // Convert realtime target to monotonic (recomputed each bit
+            // to handle chrony slew/step of CLOCK_REALTIME)
+            clock_gettime(CLOCK_REALTIME, &real_ts);
+            clock_gettime(CLOCK_MONOTONIC, &mono_ts);
+            rt_to_mono_offset_ns = (int64_t)timespec_to_ns(&mono_ts)
+                                 - (int64_t)timespec_to_ns(&real_ts);
+            ultra_wait_until_ns(sender->bit_start_times[i] + rt_to_mono_offset_ns);
 
             if (!sender->running || !running) break;
 
@@ -849,6 +876,19 @@ void* continuous_irig_sending(void *arg) {
                 clock_gettime(CLOCK_REALTIME, &start_ts);
                 double start_time_double = (double)start_ts.tv_sec + (double)start_ts.tv_nsec * 1e-9;
                 append_double(&sender->sending_starts, start_time_double);
+            }
+
+            // Record per-pulse latency if logging is enabled
+            if (sender->pulse_latency_ns) {
+                struct timespec onset_ts;
+                clock_gettime(CLOCK_REALTIME, &onset_ts);
+                uint64_t actual_ns = timespec_to_ns(&onset_ts);
+                // ideal second boundary = bit_start_times[i] + offset_ns
+                uint64_t ideal_ns = sender->bit_start_times[i] + offset_ns;
+                int64_t latency = (int64_t)(actual_ns - ideal_ns);
+                if (sender->pulse_count < sender->pulse_capacity) {
+                    sender->pulse_latency_ns[sender->pulse_count++] = latency;
+                }
             }
 
             if (debug_mode) {
@@ -902,6 +942,18 @@ irig_h_sender_t* create_irig_h_sender(int gpio_pin, int inverted_gpio_pin) {
     sender->sending_starts.data = malloc(sizeof(double) * 100);
     sender->sending_starts.length = 0;
     sender->sending_starts.capacity = 100;
+
+    // Initialize per-pulse latency logging
+    if (latency_log_path[0] != '\0') {
+        // Default capacity: 6000 pulses (100 frames * 60 bits)
+        sender->pulse_capacity = 6000;
+        sender->pulse_latency_ns = malloc(sizeof(int64_t) * sender->pulse_capacity);
+        sender->pulse_count = 0;
+    } else {
+        sender->pulse_latency_ns = NULL;
+        sender->pulse_count = 0;
+        sender->pulse_capacity = 0;
+    }
 
     // Initialize chrony status to safe defaults (unsynchronized)
     sender->chrony_stratum = 0;
@@ -963,9 +1015,31 @@ void write_timestamps_to_file(irig_h_sender_t *sender) {
     printf("Timestamps written to %s\n", sender->timestamp_filename);
 }
 
+void write_latency_log(irig_h_sender_t *sender) {
+    if (!sender->pulse_latency_ns || latency_log_path[0] == '\0') return;
+
+    FILE *fp = fopen(latency_log_path, "w");
+    if (!fp) {
+        printf("Could not open latency log: %s\n", latency_log_path);
+        return;
+    }
+
+    fprintf(fp, "pulse_index,latency_ns\n");
+    for (size_t i = 0; i < sender->pulse_count; i++) {
+        fprintf(fp, "%zu,%lld\n", i, (long long)sender->pulse_latency_ns[i]);
+    }
+
+    fclose(fp);
+    printf("Latency log written to %s (%zu pulses)\n",
+           latency_log_path, sender->pulse_count);
+}
+
 void finish_irig_sender(irig_h_sender_t *sender) {
     sender->running = false;
     pthread_join(sender->sender_thread, NULL);
+
+    // Write latency log before cleanup
+    write_latency_log(sender);
 
     // Reset enabled pins to idle state before cleanup
     if (sender->sending_gpio_pin >= 0)
@@ -978,20 +1052,22 @@ void finish_irig_sender(irig_h_sender_t *sender) {
 
     free(sender->encoded_times.data);
     free(sender->sending_starts.data);
+    free(sender->pulse_latency_ns);
     free(sender);
 }
 
 void print_usage(const char *prog_name) {
-    printf("Usage: %s [-p PIN] [-n PIN] [-w THRESHOLD] [-d] [-h] [--frames N] [--mock-log FILE]\n", prog_name);
-    printf("  -p PIN        BCM GPIO pin for normal output (default: 11, -1 to disable)\n");
-    printf("  -n PIN        BCM GPIO pin for inverted output (default: -1, disabled)\n");
-    printf("  -w THRESHOLD  LED warning threshold in ms (default: 1.0)\n");
-    printf("                LED blinks when root dispersion exceeds this value\n");
-    printf("  -d            Enable debug mode\n");
-    printf("  -h            Print this help message and exit\n");
-    printf("  --frames N    Exit after N frames (default: unlimited)\n");
+    printf("Usage: %s [-p PIN] [-n PIN] [-w THRESHOLD] [-d] [-h] [--frames N] [--latency-log FILE]\n", prog_name);
+    printf("  -p PIN           BCM GPIO pin for normal output (default: 11, -1 to disable)\n");
+    printf("  -n PIN           BCM GPIO pin for inverted output (default: -1, disabled)\n");
+    printf("  -w THRESHOLD     LED warning threshold in ms (default: 1.0)\n");
+    printf("                   LED blinks when root dispersion exceeds this value\n");
+    printf("  -d               Enable debug mode\n");
+    printf("  -h               Print this help message and exit\n");
+    printf("  --frames N       Exit after N frames (default: unlimited)\n");
+    printf("  --latency-log F  Write per-pulse latency CSV to F\n");
 #ifdef MOCK_GPIO
-    printf("  --mock-log F  Write pulse timing CSV to F (default: %s)\n", mock_log_path);
+    printf("  --mock-log F     Write pulse timing CSV to F (default: %s)\n", mock_log_path);
 #endif
     printf("\nPin numbers use BCM (Broadcom) GPIO numbering, not physical board pin numbers.\n");
 }
@@ -1030,11 +1106,12 @@ int main(int argc, char *argv[]) {
     int inverted_pin = -1;  // default: disabled
     double warn_threshold_ms = 1.0;  // default LED warning threshold
 
-    // Long options for --frames and --mock-log
+    // Long options for --frames, --latency-log, and --mock-log
     static struct option long_options[] = {
-        {"frames",   required_argument, 0, 'F'},
-        {"mock-log", required_argument, 0, 'M'},
-        {"help",     no_argument,       0, 'h'},
+        {"frames",      required_argument, 0, 'F'},
+        {"latency-log", required_argument, 0, 'L'},
+        {"mock-log",    required_argument, 0, 'M'},
+        {"help",        no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
 
@@ -1063,6 +1140,10 @@ int main(int argc, char *argv[]) {
                     fprintf(stderr, "Error: --frames must be a positive integer\n");
                     return 1;
                 }
+                break;
+            case 'L':
+                strncpy(latency_log_path, optarg, sizeof(latency_log_path) - 1);
+                latency_log_path[sizeof(latency_log_path) - 1] = '\0';
                 break;
             case 'M':
 #ifdef MOCK_GPIO
@@ -1127,6 +1208,9 @@ int main(int argc, char *argv[]) {
 
     if (max_frames > 0) {
         printf("  Frame limit:     %d\n", max_frames);
+    }
+    if (latency_log_path[0] != '\0') {
+        printf("  Latency log:     %s\n", latency_log_path);
     }
 
     irig_h_sender_t *sender = create_irig_h_sender(normal_pin, inverted_pin);

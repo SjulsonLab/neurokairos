@@ -85,6 +85,7 @@ else
     echo "IRIG sender service started."
 fi
 
+
 echo "Service command: $EXEC_CMD"
 echo ""
 echo "Useful commands:"
