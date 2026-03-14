@@ -25,7 +25,7 @@ Both scenarios result in a systemd service (`irig-sender`) that outputs a contin
 | Signal | Default BCM Pin | Direction |
 |--------|-----------------|-----------|
 | GPS PPS input | GPIO 4 | GPS → Pi |
-| IRIG-H output (normal) | GPIO 11 | Pi → recorder |
+| IRIG-H output (normal) | GPIO 9 | Pi → recorder |
 | IRIG-H output (inverted) | disabled | Pi → recorder (optional) |
 | GPS serial TX → Pi RX | GPIO 15 (UART RX) | GPS → Pi |
 | GPS serial RX ← Pi TX | GPIO 14 (UART TX) | Pi → GPS |

@@ -26,7 +26,7 @@ cd raspberry_pi/sender && make
 # Uninstall systemd service
 ./raspberry_pi/scripts/uninstall.sh
 
-# Run with default pins (BCM GPIO 11, inverted disabled)
+# Run with default pins (BCM GPIO 9, inverted disabled)
 ./raspberry_pi/sender/irig_sender
 
 # Run with custom pins
@@ -50,7 +50,7 @@ pytest tests/ -v
 Three-component system: **Encoder** (Raspberry Pi, generates IRIG-H), **Decoder** (Python, extracts timing from recordings), and **Synchronizer** (`ClockTable`, bridges clock domains).
 
 ### Encoder (C sender)
-- `raspberry_pi/sender/irig_sender.c` — Production sender. Uses direct `/dev/mem` GPIO register access with hybrid sleep/busy-wait for nanosecond-level timing precision. Default output on BCM GPIO 11 (normal), inverted disabled. Both pins configurable via CLI flags (`-p`/`-n`). Polls chrony every ~60 seconds and encodes sync status (stratum, root dispersion) in unused IRIG-H frame bits 43-44 and 46-48. Controls the RPi ACT LED to indicate sync quality. RT hardening: SCHED_FIFO priority 80, `mlockall` to prevent page faults, `CLOCK_MONOTONIC` for busy-wait loops (immune to chrony step adjustments). No CPU affinity pinning (avoids scheduler-attraction effect). `--latency-log FILE` records per-pulse onset latency for benchmarking. Runs as systemd service at Nice -20.
+- `raspberry_pi/sender/irig_sender.c` — Production sender. Uses direct `/dev/mem` GPIO register access with hybrid sleep/busy-wait for nanosecond-level timing precision. Default output on BCM GPIO 9 (normal), inverted disabled. Both pins configurable via CLI flags (`-p`/`-n`). Polls chrony every ~60 seconds and encodes sync status (stratum, root dispersion) in unused IRIG-H frame bits 43-44 and 46-48. Controls the RPi ACT LED to indicate sync quality. RT hardening: SCHED_FIFO priority 80, `mlockall` to prevent page faults, `CLOCK_MONOTONIC` for busy-wait loops (immune to chrony step adjustments). No CPU affinity pinning (avoids scheduler-attraction effect). `--latency-log FILE` records per-pulse onset latency for benchmarking. Runs as systemd service at Nice -20.
 
 ### Chrony Integration
 - `raspberry_pi/scripts/install_chrony_server.sh` — Installs chrony + gpsd on the RPi with GPS. Configures PPS-disciplined stratum 1 NTP server.

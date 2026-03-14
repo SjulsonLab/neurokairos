@@ -1058,7 +1058,7 @@ void finish_irig_sender(irig_h_sender_t *sender) {
 
 void print_usage(const char *prog_name) {
     printf("Usage: %s [-p PIN] [-n PIN] [-w THRESHOLD] [-d] [-h] [--frames N] [--latency-log FILE]\n", prog_name);
-    printf("  -p PIN           BCM GPIO pin for normal output (default: 11, -1 to disable)\n");
+    printf("  -p PIN           BCM GPIO pin for normal output (default: 9, -1 to disable)\n");
     printf("  -n PIN           BCM GPIO pin for inverted output (default: -1, disabled)\n");
     printf("  -w THRESHOLD     LED warning threshold in ms (default: 1.0)\n");
     printf("                   LED blinks when root dispersion exceeds this value\n");
@@ -1102,7 +1102,7 @@ int validate_gpio_pin(int pin, const char *label) {
 }
 
 int main(int argc, char *argv[]) {
-    int normal_pin = 11;    // default: BCM GPIO 11
+    int normal_pin = 9;     // default: BCM GPIO 9
     int inverted_pin = -1;  // default: disabled
     double warn_threshold_ms = 1.0;  // default LED warning threshold
 

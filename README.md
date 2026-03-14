@@ -31,7 +31,7 @@ For detailed specifications including the complete bit map and encoding tables, 
 - **Raspberry Pi 4 Model B**
 - **Waveshare NEO-M8T GNSS Timing Hat** or compatible GPS timing receiver with PPS output
 - **GPS antenna** with direct sky visibility
-- **GPIO connections**: Default BCM GPIO 11 for IRIG output (configurable via `-p`/`-n` flags)
+- **GPIO connections**: Default BCM GPIO 9 for IRIG output (configurable via `-p`/`-n` flags)
 
 ## Installation
 
@@ -70,7 +70,7 @@ make
 #### 3. Install as System Service
 
 ```bash
-# Install with default pins (BCM GPIO 11, inverted disabled)
+# Install with default pins (BCM GPIO 9, inverted disabled)
 ./raspberry_pi/scripts/install.sh
 
 # Install with custom pins

@@ -4,7 +4,7 @@
 # Chrony config needs to be done separately (see install_chrony_server.sh).
 #
 # Usage:
-#   ./install.sh                    # default: BCM GPIO 11, no inverted pin
+#   ./install.sh                    # default: BCM GPIO 9, no inverted pin
 #   ./install.sh -p 17              # normal output on GPIO 17
 #   ./install.sh -p 17 -n 27        # normal on 17, inverted on 27
 #   ./install.sh -w 2.0             # LED warning threshold 2.0 ms
@@ -16,7 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Defaults (match irig_sender.c defaults)
-NORMAL_PIN=11
+NORMAL_PIN=9
 INVERTED_PIN=-1
 WARN_THRESHOLD=""
 
@@ -27,7 +27,7 @@ while getopts "p:n:w:h" opt; do
         w) WARN_THRESHOLD="$OPTARG" ;;
         h)
             echo "Usage: $0 [-p PIN] [-n PIN] [-w THRESHOLD]"
-            echo "  -p PIN        BCM GPIO pin for normal output (default: 11)"
+            echo "  -p PIN        BCM GPIO pin for normal output (default: 9)"
             echo "  -n PIN        BCM GPIO pin for inverted output (default: -1, disabled)"
             echo "  -w THRESHOLD  LED warning threshold in ms (default: 1.0)"
             exit 0
