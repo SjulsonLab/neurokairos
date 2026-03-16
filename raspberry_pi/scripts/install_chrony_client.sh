@@ -66,6 +66,9 @@ log tracking measurements statistics
 # Step the clock on startup if offset is > 1 second (3 attempts)
 makestep 1.0 3
 
+# Hardware timestamping (if NIC supports it; silently ignored if not)
+hwtimestamp *
+
 # RTC drift file
 driftfile /var/lib/chrony/chrony.drift
 EOF
