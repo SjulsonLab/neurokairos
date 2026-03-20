@@ -424,7 +424,9 @@ void poll_chrony_status(irig_h_sender_t *sender) {
 // CSV fields (0-indexed): 3=stratum, 12=root dispersion, 14=leap status
 // On any failure (chronyc missing, chrony not running), sets safe defaults.
 void poll_chrony_status(irig_h_sender_t *sender) {
-    FILE *fp = popen("chronyc -c tracking 2>/dev/null", "r");
+    // Use timeout(1) to bound chronyc runtime; a hung chronyc would otherwise
+    // block fgets indefinitely and delay the next frame by >60 s.
+    FILE *fp = popen("timeout 5 chronyc -c tracking 2>/dev/null", "r");
     if (!fp) {
         sender->chrony_stratum = 0;
         sender->chrony_root_dispersion = 1.0;  // 1 second = very bad
