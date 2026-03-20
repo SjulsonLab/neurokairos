@@ -6,10 +6,6 @@ Wants=chronyd.service
 
 [Service]
 Type=simple
-# Wait until chrony offset < 50 ms before starting transmission.
-# Prevents clock steps from introducing discontinuities in the IRIG timecode.
-# chronyc waitsync args: max-tries=0 (unlimited), delta=0 (ignore), offset=0.05 s, interval=10 s
-ExecStartPre=/usr/bin/chronyc waitsync 0 0 0.05
 # Pin configuration is set by install.sh (e.g., ./install.sh -p 17 -n 27).
 # The ExecStart line below is the default; install.sh substitutes it.
 ExecStart=/usr/local/bin/irig_sender -p 9 -n -1
