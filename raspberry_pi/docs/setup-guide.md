@@ -169,6 +169,40 @@ sudo ./install.sh
 
 Same as Scenario A, Step 3. All the same flags (`-p`, `-n`, `-w`) are available.
 
+## Before Starting Recordings
+
+### Wait for the clock to stabilize
+
+After booting, chrony needs several minutes to discipline the clock — especially on first boot when the oscillator has drifted. **Wait at least 5–10 minutes** before starting any recording session. Even if the GPS has a fix immediately, the NTP control loop takes time to converge and minimize root dispersion.
+
+On a client Pi (Scenario B), allow extra time: the client must first lock to the server, which itself needs to converge.
+
+### Reading the ACT LED
+
+The IRIG sender controls the RPi's green ACT LED to indicate sync quality at a glance:
+
+| LED state | Meaning |
+|-----------|---------|
+| **Solid on** | Synced and root dispersion is below the warning threshold — safe to record |
+| **Blinking (0.5 s on / 0.5 s off)** | Not synced, or root dispersion exceeds the warning threshold — wait before recording |
+
+The LED is updated once at startup and then after every complete 60-bit frame (~every 60 seconds). If it is still blinking after 10 minutes, see [High root dispersion](#high-root-dispersion) below.
+
+The warning threshold defaults to **1.0 ms** and can be changed at install time:
+
+```bash
+# Blink only when root dispersion exceeds 2 ms
+sudo ./install.sh -w 2.0
+```
+
+To check the current dispersion without waiting for the LED cycle, run:
+
+```bash
+chronyc tracking
+```
+
+Look at `Root dispersion` — once it is well below 1 ms and `Leap status` shows `Normal`, the clock is ready.
+
 ## Troubleshooting
 
 ### No PPS pulses
