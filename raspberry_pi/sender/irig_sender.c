@@ -678,8 +678,6 @@ void update_led_status(irig_h_sender_t *sender) {
 #endif  // MOCK_GPIO
 
 void generate_irig_h_frame(irig_h_sender_t *sender, struct tm *time_info, irig_bit_t *frame) {
-    append_double(&sender->encoded_times, (double)mktime(time_info));
-
     int seconds_bcd[7], minutes_bcd[7], hours_bcd[6];
     int day_of_year_bcd[10], deciseconds_bcd[4], year_bcd[8];
 
@@ -885,6 +883,7 @@ void ultra_fast_pulse(irig_h_sender_t *sender, uint64_t pulse_duration_ns) {
 // Pre-calculate timing for the next frame
 void precalculate_next_frame(irig_h_sender_t *sender, time_t target_second) {
     struct tm *time_info = gmtime(&target_second);
+    append_double(&sender->encoded_times, (double)target_second);
     generate_irig_h_frame(sender, time_info, sender->next_frame);
 
     uint64_t frame_start_ns = (uint64_t)target_second * NS_PER_SEC;
