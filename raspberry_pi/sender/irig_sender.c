@@ -12,6 +12,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <signal.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <fcntl.h>
@@ -409,6 +410,68 @@ int encode_root_dispersion(double dispersion_sec) {
     return 7;  // >= 16 ms or not synchronized
 }
 
+static char *trim_whitespace(char *s) {
+    while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') {
+        s++;
+    }
+
+    char *end = s + strlen(s);
+    while (end > s &&
+           (end[-1] == ' ' || end[-1] == '\t' ||
+            end[-1] == '\r' || end[-1] == '\n')) {
+        end--;
+    }
+    *end = '\0';
+    return s;
+}
+
+static bool parse_int_field(const char *value, int *out) {
+    errno = 0;
+    char *endptr = NULL;
+    long parsed = strtol(value, &endptr, 10);
+    if (endptr == value || errno != 0) {
+        return false;
+    }
+    *out = (int)parsed;
+    return true;
+}
+
+static bool parse_double_field(const char *value, double *out) {
+    errno = 0;
+    char *endptr = NULL;
+    double parsed = strtod(value, &endptr);
+    if (endptr == value || errno != 0 || !isfinite(parsed)) {
+        return false;
+    }
+    *out = parsed;
+    return true;
+}
+
+static bool parse_leap_status(const char *value, bool *synced) {
+    // Labeled chrony output uses text; CSV output from some versions uses 0-3.
+    char *endptr = NULL;
+    long numeric = strtol(value, &endptr, 10);
+    if (endptr != value) {
+        *synced = (numeric != 3);
+        return true;
+    }
+
+    if (strcasecmp(value, "Normal") == 0 ||
+        strncasecmp(value, "Insert", 6) == 0 ||
+        strncasecmp(value, "Delete", 6) == 0) {
+        *synced = true;
+        return true;
+    }
+
+    if (strncasecmp(value, "Not synchronised", 16) == 0 ||
+        strncasecmp(value, "Not synchronized", 16) == 0) {
+        *synced = false;
+        return true;
+    }
+
+    return false;
+}
+
 #ifdef MOCK_GPIO
 
 // In mock mode, report stratum 1 / excellent sync (no chronyc available)
@@ -420,13 +483,14 @@ void poll_chrony_status(irig_h_sender_t *sender) {
 
 #else  // !MOCK_GPIO
 
-// Poll chrony for current sync status via `chronyc -c tracking`.
-// CSV fields (0-indexed): 3=stratum, 12=root dispersion, 14=leap status
+// Poll chrony for current sync status via `chronyc tracking`.
+// Parse labeled fields instead of positional CSV columns so this keeps working
+// across chrony versions that add/remove tracking fields.
 // On any failure (chronyc missing, chrony not running), sets safe defaults.
 void poll_chrony_status(irig_h_sender_t *sender) {
     // Use timeout(1) to bound chronyc runtime; a hung chronyc would otherwise
     // block fgets indefinitely and delay the next frame by >60 s.
-    FILE *fp = popen("timeout 5 chronyc -c tracking 2>/dev/null", "r");
+    FILE *fp = popen("LC_ALL=C timeout 5 chronyc tracking 2>/dev/null", "r");
     if (!fp) {
         sender->chrony_stratum = 0;
         sender->chrony_root_dispersion = 1.0;  // 1 second = very bad
@@ -436,35 +500,54 @@ void poll_chrony_status(irig_h_sender_t *sender) {
     }
 
     char line[1024];
-    if (fgets(line, sizeof(line), fp) == NULL) {
-        pclose(fp);
+    int new_stratum = 0;
+    double new_dispersion = 1.0;
+    bool new_synced = false;
+    bool saw_output = false;
+    bool saw_stratum = false;
+    bool saw_dispersion = false;
+    bool saw_leap_status = false;
+
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        saw_output = true;
+
+        char *colon = strchr(line, ':');
+        if (!colon) {
+            continue;
+        }
+
+        *colon = '\0';
+        char *label = trim_whitespace(line);
+        char *value = trim_whitespace(colon + 1);
+
+        if (strcasecmp(label, "Stratum") == 0) {
+            saw_stratum = parse_int_field(value, &new_stratum);
+        } else if (strcasecmp(label, "Root dispersion") == 0) {
+            saw_dispersion = parse_double_field(value, &new_dispersion);
+        } else if (strcasecmp(label, "Leap status") == 0) {
+            saw_leap_status = parse_leap_status(value, &new_synced);
+        }
+    }
+    pclose(fp);
+
+    if (!saw_output) {
         sender->chrony_stratum = 0;
         sender->chrony_root_dispersion = 1.0;
         sender->chrony_synced = false;
         printf("Chrony poll: no output from chronyc\n");
         return;
     }
-    pclose(fp);
 
-    // Parse CSV: split on commas, extract fields 3, 12, 14
-    int field = 0;
-    char *token = strtok(line, ",");
-    int new_stratum = 0;
-    double new_dispersion = 1.0;
-    bool new_synced = false;
-
-    while (token != NULL) {
-        if (field == 3) {
-            new_stratum = atoi(token);
-        } else if (field == 12) {
-            new_dispersion = atof(token);
-        } else if (field == 14) {
-            // Leap status: "Normal"=0, "Insert"=1, "Delete"=2, "Not synchronised"=3
-            int leap = atoi(token);
-            new_synced = (leap != 3);
-        }
-        token = strtok(NULL, ",");
-        field++;
+    if (!saw_stratum || !saw_dispersion || !saw_leap_status) {
+        sender->chrony_stratum = 0;
+        sender->chrony_root_dispersion = 1.0;
+        sender->chrony_synced = false;
+        printf("Chrony poll: incomplete chronyc output "
+               "(stratum=%s root_dispersion=%s leap_status=%s)\n",
+               saw_stratum ? "yes" : "no",
+               saw_dispersion ? "yes" : "no",
+               saw_leap_status ? "yes" : "no");
+        return;
     }
 
     // If not synchronized, override stratum to 0
