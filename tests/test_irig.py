@@ -1,6 +1,8 @@
+import datetime as real_dt
 import numpy as np
 import pytest
 from datetime import datetime, timezone, timedelta
+from unittest.mock import patch
 
 from neurokairos.decoders.irig import (
     PULSE_ZERO,
@@ -174,6 +176,26 @@ class TestDecodeFrame:
     def test_wrong_length_returns_none(self):
         assert decode_frame(np.zeros(59, dtype=np.int8)) is None
 
+    def test_uses_utc_year_for_century(self):
+        """Century must be derived from UTC year, not local system time."""
+        class MockDatetime(real_dt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                # Without tz (local): wrong century; with UTC: correct century
+                if tz is None:
+                    return real_dt.datetime(2126, 6, 15, 12, 0, 0)
+                return real_dt.datetime(2026, 6, 15, 12, 0, 0, tzinfo=tz)
+
+        frame = self._make_frame(second=0, minute=31, hour=14, day=15, year=26)
+        with patch('neurokairos.decoders.irig._dt.datetime', MockDatetime):
+            ts = decode_frame(frame)
+
+        expected = datetime(2026, 1, 15, 14, 31, 0, tzinfo=timezone.utc)
+        assert ts is not None
+        assert abs(ts - expected.timestamp()) < 0.01, (
+            "Century must come from UTC year (2026), not local year (2126)"
+        )
+
 
 class TestDecodePartialFrame:
     """Test partial-frame decoding at a boundary between two incomplete frames."""
@@ -252,6 +274,29 @@ class TestDecodePartialFrame:
         assert ts is not None
         expected = datetime(2026, 1, 15, 0, 0, 0, tzinfo=timezone.utc)
         assert abs(ts - expected.timestamp()) < 0.01
+
+    def test_uses_utc_year_for_century(self):
+        """Century must be derived from UTC year, not local system time."""
+        class MockDatetime(real_dt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz is None:
+                    return real_dt.datetime(2126, 6, 15, 12, 0, 0)
+                return real_dt.datetime(2026, 6, 15, 12, 0, 0, tzinfo=tz)
+
+        prev = self._make_frame(second=0, minute=30, hour=14, day=15, year=26)
+        curr = self._make_frame(second=0, minute=31, hour=14, day=15, year=26)
+        pulse_types = np.concatenate([prev[33:60], curr[0:48]])
+        boundary_idx = 27
+
+        with patch('neurokairos.decoders.irig._dt.datetime', MockDatetime):
+            ts = decode_partial_frame(pulse_types, boundary_idx)
+
+        expected = datetime(2026, 1, 15, 14, 31, 0, tzinfo=timezone.utc)
+        assert ts is not None
+        assert abs(ts - expected.timestamp()) < 0.01, (
+            "Century must come from UTC year (2026), not local year (2126)"
+        )
 
 
 class TestComputeElapsedSeconds:

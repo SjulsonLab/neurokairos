@@ -1047,7 +1047,7 @@ irig_h_sender_t* create_irig_h_sender(int gpio_pin, int inverted_gpio_pin) {
     sender->led_original_trigger[0] = '\0';
 
     time_t now = time(NULL);
-    struct tm *tm_info = localtime(&now); // localtime is intentional here -- just for the output filename
+    struct tm *tm_info = gmtime(&now); // UTC timestamp in filename for consistency
     strftime(sender->timestamp_filename, sizeof(sender->timestamp_filename),
              "irig_output_timestamps_%Y-%m-%d_%H-%M-%S.csv", tm_info);
 

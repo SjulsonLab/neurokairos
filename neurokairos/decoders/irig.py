@@ -174,7 +174,7 @@ def decode_frame(pulse_types_60):
         + bcd_decode(bits[55:59], YEARS_WEIGHTS[4:8])
     )
 
-    year = year_2digit + (_dt.datetime.now().year // 100) * 100
+    year = year_2digit + (_dt.datetime.now(_dt.timezone.utc).year // 100) * 100
 
     try:
         dt = _dt.datetime(year, 1, 1, hours, minutes, seconds,
@@ -304,7 +304,7 @@ def decode_partial_frame(pulse_types, boundary_idx):
     if doy is None or year_2d is None:
         return None
 
-    year = year_2d + (_dt.datetime.now().year // 100) * 100
+    year = year_2d + (_dt.datetime.now(_dt.timezone.utc).year // 100) * 100
 
     try:
         dt = _dt.datetime(year, 1, 1, hrs, mins, sec, tzinfo=_dt.timezone.utc)
