@@ -48,9 +48,30 @@ pip install -e ".[test]"
 
 ### Raspberry Pi Setup
 
+The fastest path is to flash a pre-built image. If you'd rather configure a stock Pi OS install by hand, skip to *Manual install* below.
+
+#### Option A: Pre-built image (recommended)
+
+Two images are published on the [Releases page]:
+
+- **`neurokairos-sender-*.img.xz`** — `irig_sender` + chrony as an NTP **client**. Use when an external NTP server (e.g., a commercial GPS-NTP appliance) provides time on your network. No GPS hardware on the Pi.
+- **`neurokairos-server-*.img.xz`** — `irig_sender` + chrony as a GPS-disciplined **stratum-1 NTP server** + gpsd + PPS overlay. Use when you have a GPS timing receiver wired to the Pi's UART and PPS to GPIO 4.
+
+Flash with [Raspberry Pi Imager], then before unmounting the FAT `bootfs` partition drop two files on it:
+
+- empty file named `ssh` (enables SSH on first boot)
+- `userconf.txt` with one line `username:hashed-password` (Imager's "Edit custom OS settings" dialog writes this for you)
+
+Boot the Pi. The sender starts automatically. Per-variant first-boot checks and the local build process are documented in [`image/README.md`](image/README.md).
+
+[Releases page]: https://github.com/lukesjulson/irig_unix_timecodes/releases
+[Raspberry Pi Imager]: https://www.raspberrypi.com/software/
+
+#### Option B: Manual install
+
 The following steps run on the Raspberry Pi that will generate IRIG-H signals.
 
-#### 1. Configure GPS Clock Disciplining
+##### 1. Configure GPS Clock Disciplining
 
 ```bash
 # Install chrony + gpsd with GPS PPS disciplining (stratum 1 server)
@@ -60,14 +81,14 @@ sudo ./raspberry_pi/scripts/install_chrony_server.sh
 sudo ./raspberry_pi/scripts/install_chrony_client.sh --server <your-ntp-server>
 ```
 
-#### 2. Compile C Sender
+##### 2. Compile C Sender
 
 ```bash
 cd raspberry_pi/sender
 make
 ```
 
-#### 3. Install as System Service
+##### 3. Install as System Service
 
 ```bash
 # Install with default pins (BCM GPIO 9, inverted disabled)
@@ -232,6 +253,12 @@ neurokairos/
 │   ├── neurokairos_irig_h_frame.png
 │   ├── generate_irig_h_figure.py
 │   └── system_architecture.jpg
+├── image/                              # pi-gen config for prebuilt OS images
+│   ├── README.md
+│   ├── config.template
+│   ├── stage-neurokairos-common/
+│   ├── stage-neurokairos-client/        # exports neurokairos-sender-*.img.xz
+│   └── stage-neurokairos-server/        # exports neurokairos-server-*.img.xz
 ├── pyproject.toml
 ├── README.md
 ├── CLAUDE.md

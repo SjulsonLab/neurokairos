@@ -1,0 +1,5 @@
+# gpsd configuration for NeuroKairos GPS timing receiver
+START_DAEMON="true"
+GPSD_OPTIONS="-n"
+DEVICES="/dev/ttyAMA0 /dev/pps0"
+USBAUTO="false"

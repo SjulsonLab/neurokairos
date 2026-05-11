@@ -1,0 +1,32 @@
+# pi-gen config for NeuroKairos image builds.
+# This file is rendered by .github/workflows/build-image.yml (and by the
+# local-build instructions in image/README.md). The @VAR@ placeholders are
+# substituted before pi-gen reads it.
+
+IMG_NAME='neurokairos'
+
+RELEASE='bookworm'
+TARGET_HOSTNAME='neurokairos'
+
+LOCALE_DEFAULT='en_US.UTF-8'
+KEYBOARD_KEYMAP='us'
+KEYBOARD_LAYOUT='English (US)'
+TIMEZONE_DEFAULT='Etc/UTC'
+
+# No baked-in user/password. First boot creates a user from `userconf.txt`
+# on the FAT boot partition (standard Pi OS behavior).
+DISABLE_FIRST_BOOT_USER_RENAME=0
+FIRST_USER_NAME=''
+FIRST_USER_PASS=''
+
+# SSH is gated on the standard `ssh` touchfile on the boot partition.
+ENABLE_SSH=0
+
+# Stages: the standard pi-gen lite trio plus our common layer and the variant
+# selected by the caller. The variant is the only place EXPORT_IMAGE appears
+# (we strip pi-gen/stage2/EXPORT_IMAGE in CI), so exactly one .img is produced
+# per build.
+STAGE_LIST='stage0 stage1 stage2 stage-neurokairos-common @VARIANT_STAGE@'
+
+DEPLOY_COMPRESSION='xz'
+COMPRESSION_LEVEL=6
