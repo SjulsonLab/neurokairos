@@ -36,6 +36,14 @@ jobs:
       - name: Check out neurokairos
         uses: actions/checkout@v4
 
+      - name: Install qemu-user-static
+        run: |
+          # pi-gen executes arm64 binaries inside the rootfs via QEMU userspace
+          # (registered through binfmt_misc). The Docker wrapper alone doesn't
+          # provide this — the kernel handler has to be set up on the host.
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-user-static binfmt-support
+
       - name: Free up disk space on runner
         run: |
           # pi-gen needs ~10-15 GB; the default Ubuntu runner ships with a lot
