@@ -45,6 +45,8 @@ pip install -e ".[test]"
 pytest tests/ -v
 ```
 
+Prebuilt Pi OS images are produced by pi-gen — see `image/README.md` and `.github/workflows/build-image.yml`. The workflow cross-compiles `raspberry_pi/sender/irig_sender.c` for arm64 on the runner (using `gcc-aarch64-linux-gnu`) and drops the binary plus `raspberry_pi/systemd/irig-sender.service` into the pi-gen stage's `files/` at build time, so those source locations remain the single source of truth. We deliberately avoid compiling inside pi-gen's chroot because qemu/binfmt reliability across stage boundaries is fragile.
+
 ## Architecture
 
 Three-component system: **Encoder** (Raspberry Pi, generates IRIG-H), **Decoder** (Python, extracts timing from recordings), and **Synchronizer** (`ClockTable`, bridges clock domains).

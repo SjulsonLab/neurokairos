@@ -36,18 +36,24 @@ jobs:
       - name: Check out neurokairos
         uses: actions/checkout@v4
 
-      - name: Install qemu-user-static and register binfmt handlers
+      - name: Install qemu-user-static and arm64 cross-compiler
         run: |
-          # pi-gen's build-docker.sh runs `which qemu-aarch64-static` on the
-          # host before invoking docker, and then registers a binfmt_misc
-          # handler pointing at that host path with the `F` (fix-binary) flag.
-          # So we need the binary on the host filesystem AND proper handlers
-          # registered. apt provides the binary; the multiarch container
-          # ensures the registered handlers use the `F` flag so execution
-          # survives pi-gen's chroot.
+          # qemu-user-static is needed for pi-gen's chroot operations (apt
+          # install, systemctl enable, etc.). gcc-aarch64-linux-gnu lets us
+          # cross-compile irig_sender on the host instead of fighting
+          # qemu/binfmt reliability through chroot stage boundaries.
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends qemu-user-static binfmt-support
+          sudo apt-get install -y --no-install-recommends \
+              qemu-user-static binfmt-support \
+              gcc-aarch64-linux-gnu libc6-dev-arm64-cross
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+
+      - name: Cross-compile irig_sender for arm64
+        run: |
+          install -d build
+          aarch64-linux-gnu-gcc -O2 -o build/irig_sender \
+              raspberry_pi/sender/irig_sender.c -lpthread -lm
+          file build/irig_sender
 
       - name: Free up disk space on runner
         run: |
@@ -70,12 +76,12 @@ jobs:
           cp -r image/stage-neurokairos-common pi-gen/
           cp -r image/${{ matrix.stage_dir }} pi-gen/
 
-          # Copy upstream source-of-truth files into the common stage's files/.
-          # raspberry_pi/ is the only place these live in git; pi-gen runs from
-          # a copy.
+          # Copy the cross-compiled arm64 binary and the systemd unit into
+          # the common stage's files/. raspberry_pi/ is the source of truth in
+          # git; pi-gen runs from a copy. We do not ship the .c/Makefile to
+          # the image — the image carries only the binary.
           dst=pi-gen/stage-neurokairos-common/00-install-sender/files
-          install -m 644 raspberry_pi/sender/irig_sender.c "$dst/"
-          install -m 644 raspberry_pi/sender/Makefile "$dst/"
+          install -m 755 build/irig_sender "$dst/"
           install -m 644 raspberry_pi/systemd/irig-sender.service "$dst/"
 
           # Don't export the vanilla Pi OS Lite image from stage2 — only our

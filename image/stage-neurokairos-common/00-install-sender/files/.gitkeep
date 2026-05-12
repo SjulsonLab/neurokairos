@@ -1,5 +1,4 @@
-# Sources are copied here by .github/workflows/build-image.yml before pi-gen runs:
-#   irig_sender.c        <- raspberry_pi/sender/irig_sender.c
-#   Makefile             <- raspberry_pi/sender/Makefile
-#   irig-sender.service  <- raspberry_pi/systemd/irig-sender.service
+# Files are dropped here by .github/workflows/build-image.yml before pi-gen runs:
+#   irig_sender         <- cross-compiled arm64 binary from raspberry_pi/sender/irig_sender.c
+#   irig-sender.service <- raspberry_pi/systemd/irig-sender.service
 # Do not commit those copies; raspberry_pi/ is the single source of truth.
