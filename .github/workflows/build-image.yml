@@ -36,13 +36,15 @@ jobs:
       - name: Check out neurokairos
         uses: actions/checkout@v4
 
-      - name: Install qemu-user-static
+      - name: Register QEMU binfmt handlers
         run: |
-          # pi-gen executes arm64 binaries inside the rootfs via QEMU userspace
-          # (registered through binfmt_misc). The Docker wrapper alone doesn't
-          # provide this — the kernel handler has to be set up on the host.
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends qemu-user-static binfmt-support
+          # pi-gen's chroot needs to transparently execute arm64 binaries via
+          # QEMU userspace. The `multiarch/qemu-user-static --reset -p yes`
+          # image registers binfmt_misc handlers with the `F` (fix-binary)
+          # flag, which keeps an open fd to the qemu interpreter across
+          # chroot/mountns boundaries — apt-installing qemu-user-static alone
+          # registers handlers that fail inside pi-gen's chroot.
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
       - name: Free up disk space on runner
         run: |
