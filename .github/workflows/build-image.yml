@@ -36,14 +36,17 @@ jobs:
       - name: Check out neurokairos
         uses: actions/checkout@v4
 
-      - name: Register QEMU binfmt handlers
+      - name: Install qemu-user-static and register binfmt handlers
         run: |
-          # pi-gen's chroot needs to transparently execute arm64 binaries via
-          # QEMU userspace. The `multiarch/qemu-user-static --reset -p yes`
-          # image registers binfmt_misc handlers with the `F` (fix-binary)
-          # flag, which keeps an open fd to the qemu interpreter across
-          # chroot/mountns boundaries — apt-installing qemu-user-static alone
-          # registers handlers that fail inside pi-gen's chroot.
+          # pi-gen's build-docker.sh runs `which qemu-aarch64-static` on the
+          # host before invoking docker, and then registers a binfmt_misc
+          # handler pointing at that host path with the `F` (fix-binary) flag.
+          # So we need the binary on the host filesystem AND proper handlers
+          # registered. apt provides the binary; the multiarch container
+          # ensures the registered handlers use the `F` flag so execution
+          # survives pi-gen's chroot.
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends qemu-user-static binfmt-support
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 
       - name: Free up disk space on runner
