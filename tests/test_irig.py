@@ -492,6 +492,29 @@ class TestDecodedAnchorFiltering:
 
         assert filtered == decoded
 
+    def test_discards_small_forward_skew_when_lookahead_matches_prior_track(self):
+        """A one-frame BCD error of tens of seconds is still a bad anchor."""
+        from neurokairos.decoders import irig as irig_mod
+
+        base = datetime(2026, 5, 9, 14, 30, tzinfo=timezone.utc).timestamp()
+        decoded = [
+            (60, base),
+            (120, base + 60),
+            # Corrupted seconds/minutes bits: 20 seconds ahead of the track.
+            (180, base + 140),
+            (240, base + 180),
+            (300, base + 240),
+        ]
+
+        filtered = irig_mod._filter_decoded_anchors(decoded)
+
+        assert filtered == [
+            (60, base),
+            (120, base + 60),
+            (240, base + 180),
+            (300, base + 240),
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Helpers for building synthetic IRIG frames with sync status bits
