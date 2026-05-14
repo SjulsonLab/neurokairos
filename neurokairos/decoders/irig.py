@@ -571,6 +571,92 @@ def _build_sync_arrays(n_pulses, sync_anchors):
     return stratum, disp
 
 
+def _filter_decoded_anchors(
+    decoded,
+    lookahead=3,
+    tolerance_seconds=1.0,
+):
+    """Discard implausible decoded-frame anchors while preserving jumps.
+
+    Parameters
+    ----------
+    decoded : list of tuple
+        ``(pulse_index, unix_timestamp)`` anchors sorted or unsorted by
+        ``pulse_index``. ``pulse_index`` is an integer index into the
+        per-pulse arrays; because IRIG-H has one pulse per second, differences
+        in pulse index are elapsed seconds in the source pulse sequence.
+        ``unix_timestamp`` is a UTC timestamp in seconds.
+    lookahead : int
+        Number of subsequent decoded anchors used to decide whether an
+        off-track timestamp is a real concatenation or a bad decode.
+    tolerance_seconds : float
+        Maximum absolute UTC error for a lookahead anchor to count as
+        consistent with a candidate time track. Units are seconds.
+
+    Returns
+    -------
+    list of tuple
+        Filtered ``(pulse_index, unix_timestamp)`` anchors, sorted by
+        ``pulse_index`` with strictly increasing timestamps.
+    """
+    if not decoded:
+        return []
+
+    decoded = sorted(decoded)
+    filtered = [decoded[0]]
+
+    def _score_track(base_idx, base_time, candidates):
+        score = 0
+        for idx, timestamp in candidates:
+            expected = base_time + (idx - base_idx)
+            if abs(timestamp - expected) <= tolerance_seconds:
+                score += 1
+        return score
+
+    for k in range(1, len(decoded)):
+        prev_idx, prev_time = filtered[-1]
+        curr_idx, curr_time = decoded[k]
+        source_delta = curr_idx - prev_idx
+        reference_delta = curr_time - prev_time
+
+        if reference_delta <= 0:
+            logger.warning(
+                "Discarding inconsistent anchor at pulse %d "
+                "(time %.0f <= previous %.0f)",
+                curr_idx, curr_time, prev_time)
+            continue
+
+        if source_delta <= 0:
+            logger.warning(
+                "Discarding inconsistent anchor at pulse %d "
+                "(source index %.0f <= previous %.0f)",
+                curr_idx, curr_idx, prev_idx)
+            continue
+
+        if abs(reference_delta - source_delta) <= tolerance_seconds:
+            filtered.append(decoded[k])
+            continue
+
+        future = decoded[k + 1:k + 1 + lookahead]
+        if not future:
+            filtered.append(decoded[k])
+            continue
+
+        previous_track_score = _score_track(prev_idx, prev_time, future)
+        current_track_score = _score_track(curr_idx, curr_time, future)
+        if previous_track_score > current_track_score:
+            logger.warning(
+                "Discarding implausible anchor at pulse %d "
+                "(reference jumped %.0f s, source elapsed %.0f s; "
+                "lookahead favors prior track)",
+                curr_idx, reference_delta, source_delta)
+            continue
+
+        filtered.append(decoded[k])
+
+    return filtered
+
+
 def build_clock_table(pulse_onsets, pulse_widths):
     """Build a :class:`ClockTable` from detected IRIG pulses.
 
@@ -629,20 +715,11 @@ def build_clock_table(pulse_onsets, pulse_widths):
     if not decoded:
         raise ValueError("No valid IRIG frames could be decoded")
 
-    # Validate anchors: discard any with non-monotonic timestamps.
-    # Partial-frame decoding near missing pulses can produce shifted BCD reads
-    # that yield wildly wrong timestamps; this filter removes them.
-    decoded.sort()
-    filtered = [decoded[0]]
-    for k in range(1, len(decoded)):
-        if decoded[k][1] > filtered[-1][1]:
-            filtered.append(decoded[k])
-        else:
-            logger.warning(
-                "Discarding inconsistent anchor at pulse %d "
-                "(time %.0f <= previous %.0f)",
-                decoded[k][0], decoded[k][1], filtered[-1][1])
-    decoded = filtered
+    # Validate anchors: partial-frame decoding near missing pulses can shift
+    # BCD reads and produce wildly wrong timestamps. Large forward jumps can
+    # also be legitimate concatenated recordings, so use local lookahead before
+    # rejecting them.
+    decoded = _filter_decoded_anchors(decoded)
 
     # Assign timestamps using all anchors and elapsed-second intervals
     reference = assign_timestamps_from_anchors(
