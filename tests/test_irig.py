@@ -448,6 +448,51 @@ class TestAssignTimestampsFromAnchors:
         assert np.max(diffs) > 100
 
 
+class TestDecodedAnchorFiltering:
+    """Tests for decoded frame anchor filtering before ClockTable assembly."""
+
+    def test_discards_implausible_forward_jump_when_lookahead_matches_prior_track(self):
+        """A single bad future timestamp should not poison later anchors."""
+        from neurokairos.decoders import irig as irig_mod
+
+        base = datetime(2026, 5, 9, 14, 30, tzinfo=timezone.utc).timestamp()
+        decoded = [
+            (60, base),
+            (120, base + 60),
+            # Corrupted BCD field: jumps 100 days forward for one frame.
+            (180, base + 100 * 24 * 3600 + 120),
+            (240, base + 180),
+            (300, base + 240),
+        ]
+
+        filtered = irig_mod._filter_decoded_anchors(decoded)
+
+        assert filtered == [
+            (60, base),
+            (120, base + 60),
+            (240, base + 180),
+            (300, base + 240),
+        ]
+
+    def test_preserves_legitimate_forward_concatenation(self):
+        """A real segment boundary is kept when lookahead follows the jump."""
+        from neurokairos.decoders import irig as irig_mod
+
+        base = datetime(2026, 5, 9, 14, 30, tzinfo=timezone.utc).timestamp()
+        segment_2 = datetime(2026, 5, 12, 9, 0, tzinfo=timezone.utc).timestamp()
+        decoded = [
+            (60, base),
+            (120, base + 60),
+            (180, segment_2),
+            (240, segment_2 + 60),
+            (300, segment_2 + 120),
+        ]
+
+        filtered = irig_mod._filter_decoded_anchors(decoded)
+
+        assert filtered == decoded
+
+
 # ---------------------------------------------------------------------------
 # Helpers for building synthetic IRIG frames with sync status bits
 # ---------------------------------------------------------------------------
@@ -519,6 +564,41 @@ def _frames_to_pulse_data(frames, sps=30_000.0):
     widths = np.array([width_frac[int(t)] * sps for t in all_types],
                       dtype=np.float64)
     return onsets, widths
+
+
+def _make_frame_from_datetime(t):
+    """Build a synthetic IRIG-H frame from a timezone-aware UTC datetime."""
+    assert t.tzinfo is not None
+    return _make_frame_with_sync(
+        second=t.second,
+        minute=t.minute,
+        hour=t.hour,
+        day=t.timetuple().tm_yday,
+        year=t.year % 100,
+    )
+
+
+class TestBuildClockTableAnchorFiltering:
+    """Integration tests for contextual decoded-anchor filtering."""
+
+    def test_bad_future_frame_does_not_define_recording_stop(self):
+        """One corrupted frame should be discarded if neighbors stay on track."""
+        start = datetime(2026, 5, 9, 14, 0, tzinfo=timezone.utc)
+        frames = [
+            _make_frame_from_datetime(start + timedelta(minutes=0)),
+            _make_frame_from_datetime(start + timedelta(minutes=1)),
+            _make_frame_from_datetime(start + timedelta(days=100, minutes=2)),
+            _make_frame_from_datetime(start + timedelta(minutes=3)),
+            _make_frame_from_datetime(start + timedelta(minutes=4)),
+        ]
+        onsets, widths = _frames_to_pulse_data(frames, sps=1.0)
+
+        ct = build_clock_table(onsets, widths)
+
+        assert ct.metadata["recording_start"] == "2026-05-09T14:00:00Z"
+        assert ct.metadata["recording_stop"] == "2026-05-09T14:04:59Z"
+        assert ct.metadata["n_frames_decoded"] == 3
+        assert ct.metadata["n_concat_boundaries"] == 0
 
 
 # ---------------------------------------------------------------------------
