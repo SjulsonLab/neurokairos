@@ -506,6 +506,28 @@ class TestDecodedAnchorFiltering:
             (300, base + 240),
         ]
 
+    def test_discards_two_second_skew_when_lookahead_matches_prior_track(self):
+        """Even a 2 s anchor skew can make midpoint assignment non-monotonic."""
+        from neurokairos.decoders import irig as irig_mod
+
+        base = datetime(2026, 5, 9, 14, 30, tzinfo=timezone.utc).timestamp()
+        decoded = [
+            (60, base),
+            (120, base + 60),
+            (180, base + 122),
+            (240, base + 180),
+            (300, base + 240),
+        ]
+
+        filtered = irig_mod._filter_decoded_anchors(decoded)
+
+        assert filtered == [
+            (60, base),
+            (120, base + 60),
+            (240, base + 180),
+            (300, base + 240),
+        ]
+
         filtered = irig_mod._filter_decoded_anchors(decoded)
 
         assert filtered == [
