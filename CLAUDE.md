@@ -45,7 +45,7 @@ pip install -e ".[test]"
 pytest tests/ -v
 ```
 
-Prebuilt Pi OS images are produced by pi-gen — see `image/README.md` and `.github/workflows/build-image.yml`. The workflow cross-compiles `raspberry_pi/sender/irig_sender.c` for arm64 on the runner (using `gcc-aarch64-linux-gnu`) and drops the binary plus `raspberry_pi/systemd/irig-sender.service` into the pi-gen stage's `files/` at build time, so those source locations remain the single source of truth. We deliberately avoid compiling inside pi-gen's chroot because qemu/binfmt reliability across stage boundaries is fragile.
+Prebuilt Pi OS images are produced by pi-gen — see `image/README.md` and `.github/workflows/build-image.yml`. The workflow runs on a native arm64 runner (`ubuntu-24.04-arm`) so no qemu emulation is involved; `raspberry_pi/sender/irig_sender.c` compiles natively and the binary plus `raspberry_pi/systemd/irig-sender.service` are dropped into the pi-gen stage's `files/` at build time. `raspberry_pi/` remains the single source of truth.
 
 ## Architecture
 

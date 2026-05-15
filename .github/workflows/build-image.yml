@@ -17,7 +17,11 @@ permissions:
 jobs:
   build:
     name: Build ${{ matrix.variant }} image
-    runs-on: ubuntu-22.04
+    # Native arm64 runner — eliminates qemu-user emulation entirely. pi-gen's
+    # cross-arch builds (x86_64 host → arm64 target) repeatedly hit qemu bugs
+    # (CPython SIGSEGV, binfmt failing mid-build, etc.). On a native arm64
+    # host none of that machinery is in the path.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
 
     strategy:
@@ -36,23 +40,13 @@ jobs:
       - name: Check out neurokairos
         uses: actions/checkout@v4
 
-      - name: Install qemu-user-static and arm64 cross-compiler
+      - name: Compile irig_sender (native arm64)
         run: |
-          # qemu-user-static is needed for pi-gen's chroot operations (apt
-          # install, systemctl enable, etc.). gcc-aarch64-linux-gnu lets us
-          # cross-compile irig_sender on the host instead of fighting
-          # qemu/binfmt reliability through chroot stage boundaries.
+          # Native compile — no cross toolchain needed on arm64 runner.
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-              qemu-user-static binfmt-support \
-              gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-
-      - name: Cross-compile irig_sender for arm64
-        run: |
+          sudo apt-get install -y --no-install-recommends build-essential
           install -d build
-          aarch64-linux-gnu-gcc -O2 -o build/irig_sender \
-              raspberry_pi/sender/irig_sender.c -lpthread -lm
+          gcc -O2 -o build/irig_sender raspberry_pi/sender/irig_sender.c -lpthread -lm
           file build/irig_sender
 
       - name: Free up disk space on runner
@@ -87,12 +81,6 @@ jobs:
           # Don't export the vanilla Pi OS Lite image from stage2 — only our
           # variant stage exports.
           rm -f pi-gen/stage2/EXPORT_IMAGE
-
-          # pi-gen's build-docker.sh pins the build container to debian:bullseye,
-          # which ships qemu-user-static 5.2. That version crashes CPython 3.11
-          # under emulation (SIGSEGV in py3compile when installing python3-pigpio
-          # and similar). Bump to bookworm, which has qemu 7.x.
-          sed -i 's/debian:bullseye/debian:bookworm/g' pi-gen/build-docker.sh pi-gen/Dockerfile
 
           # Render pi-gen/config from the template
           sed "s|@VARIANT_STAGE@|${{ matrix.stage_dir }}|" \
