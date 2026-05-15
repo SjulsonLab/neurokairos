@@ -88,6 +88,12 @@ jobs:
           # variant stage exports.
           rm -f pi-gen/stage2/EXPORT_IMAGE
 
+          # pi-gen's build-docker.sh pins the build container to debian:bullseye,
+          # which ships qemu-user-static 5.2. That version crashes CPython 3.11
+          # under emulation (SIGSEGV in py3compile when installing python3-pigpio
+          # and similar). Bump to bookworm, which has qemu 7.x.
+          sed -i 's/debian:bullseye/debian:bookworm/g' pi-gen/build-docker.sh pi-gen/Dockerfile
+
           # Render pi-gen/config from the template
           sed "s|@VARIANT_STAGE@|${{ matrix.stage_dir }}|" \
               image/config.template > pi-gen/config
