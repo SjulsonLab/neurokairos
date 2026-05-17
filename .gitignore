@@ -1,5 +1,8 @@
 .DS_Store
 
+# Claude Code local state
+.claude/
+
 # Compiled C sender binary
 raspberry_pi/sender/irig_sender
 raspberry_pi/sender/irig_sender_mock

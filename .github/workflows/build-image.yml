@@ -40,19 +40,6 @@ jobs:
       - name: Check out neurokairos
         uses: actions/checkout@v4
 
-      - name: Clear any stale aarch64 binfmt_misc handlers
-        run: |
-          # On a native arm64 host the kernel runs arm64 ELFs natively — we
-          # don't want any binfmt_misc handler intercepting them and routing
-          # through a qemu path that won't exist inside pi-gen's chroot.
-          for h in /proc/sys/fs/binfmt_misc/qemu-aarch64 /proc/sys/fs/binfmt_misc/qemu-aarch64-rpi; do
-            if [ -f "$h" ]; then
-              echo "Disabling $h"
-              sudo bash -c "echo -1 > '$h'" || true
-            fi
-          done
-          ls /proc/sys/fs/binfmt_misc/ 2>/dev/null || echo "(no binfmt_misc handlers registered)"
-
       - name: Compile irig_sender (native arm64)
         run: |
           # Native compile — no cross toolchain needed on arm64 runner.
@@ -83,7 +70,7 @@ jobs:
           cp -r image/stage-neurokairos-common pi-gen/
           cp -r image/${{ matrix.stage_dir }} pi-gen/
 
-          # Copy the cross-compiled arm64 binary and the systemd unit into
+          # Copy the natively-built arm64 binary and the systemd unit into
           # the common stage's files/. raspberry_pi/ is the source of truth in
           # git; pi-gen runs from a copy. We do not ship the .c/Makefile to
           # the image — the image carries only the binary.
@@ -94,13 +81,6 @@ jobs:
           # Don't export the vanilla Pi OS Lite image from stage2 — only our
           # variant stage exports.
           rm -f pi-gen/stage2/EXPORT_IMAGE
-
-          # On a native arm64 host, pi-gen's `dpkg-reconfigure qemu-user-static`
-          # inside its container registers an aarch64 binfmt_misc handler that
-          # hijacks native arm64 exec — kernel routes ELFs through a qemu path
-          # that doesn't exist in the chroot, producing "cannot execute binary
-          # file". Strip the line; we don't need any qemu setup natively.
-          sed -i '/dpkg-reconfigure qemu-user-static/d' pi-gen/build-docker.sh
 
           # Render pi-gen/config from the template
           sed "s|@VARIANT_STAGE@|${{ matrix.stage_dir }}|" \
