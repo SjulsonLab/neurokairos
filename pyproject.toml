@@ -31,4 +31,4 @@ report = ["matplotlib"]
 test = ["pytest"]
 
 [project.urls]
-Repository = "https://github.com/lukesjulson/irig_unix_timecodes"
+Repository = "https://github.com/SjulsonLab/neurokairos"

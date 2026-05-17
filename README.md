@@ -64,7 +64,7 @@ Flash with [Raspberry Pi Imager], then before unmounting the FAT `bootfs` partit
 
 Boot the Pi. The sender starts automatically. Per-variant first-boot checks and the local build process are documented in [`image/README.md`](image/README.md).
 
-[Releases page]: https://github.com/lukesjulson/irig_unix_timecodes/releases
+[Releases page]: https://github.com/SjulsonLab/neurokairos/releases
 [Raspberry Pi Imager]: https://www.raspberrypi.com/software/
 
 #### Option B: Manual install
