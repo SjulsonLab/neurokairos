@@ -27,11 +27,12 @@ EOF
 # Drop the serial console from kernel cmdline so it doesn't fight gpsd for the UART.
 sed -i 's/ \?console=serial0,[0-9]\+//g; s/ \?console=ttyAMA0,[0-9]\+//g' "${CMDLINE_TXT}"
 
-on_chroot systemctl disable hciuart.service || true
-on_chroot systemctl disable serial-getty@ttyAMA0.service || true
-
-on_chroot systemctl enable chrony
-on_chroot systemctl enable gpsd
+on_chroot << EOF
+systemctl disable hciuart.service || true
+systemctl disable serial-getty@ttyAMA0.service || true
+systemctl enable chrony
+systemctl enable gpsd
+EOF
 
 echo "neurokairos-server" > "${ROOTFS_DIR}/etc/hostname"
 sed -i 's/127\.0\.1\.1.*/127.0.1.1\tneurokairos-server/' "${ROOTFS_DIR}/etc/hosts"
