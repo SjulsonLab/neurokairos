@@ -1,4 +1,4 @@
-# Neurokairos MVP (minimum viable product) Implementation Plan
+# Neurokairos MVP (Minimum Viable Product) Implementation Plan
 
 ## Objectives
 
@@ -10,158 +10,109 @@ Neurokairos is a Raspberry Pi–based time synchronization appliance that provid
 - Monitoring and notifications
 - Simple web-based configuration
 
-The MVP should:
+The Minimum Viable Product (MVP) should:
 
 - Use a single SD card image for all deployments.
 - Require no display, keyboard, mouse, buttons, or serial console for normal setup.
 - Be deployable by non-technical users.
-- Support both server and client deployments through configuration rather than separate images.
+- Support both NTP servers and NTP clients through configuration rather than separate images.
 
 ---
 
-# System Architecture
+# Time Source Configuration
 
-## Base Platform
+The setup wizard should avoid networking jargon whenever possible.
 
-- Raspberry Pi OS Lite
-- chrony
-- avahi-daemon
-- OpenSSH
-- Python 3
-- Lightweight web UI (Flask)
-- systemd services
+Instead of asking whether the device is a "server" or "client", the wizard asks:
 
-Single image for all systems.
+## Where should this device obtain its time?
+
+### Option 1: GNSS Receiver Attached (Recommended for Time Servers)
+
+A GNSS receiver (GPS, Galileo, etc.) and PPS source are connected directly to this Neurokairos device.
+
+Configuration:
+
+```text
+GNSS/PPS
+     ↓
+Neurokairos
+```
+
+Chrony configuration includes:
+
+- GNSS/PPS as primary source
+- Internet time servers as backup sources
+
+If GNSS lock is lost, the system can continue using WAN NTP sources and holdover behavior.
+
+This is the recommended configuration for a building's primary time server.
 
 ---
 
-# Initial Boot Experience
+### Option 2: Local Time Server or Time Appliance
 
-Factory configuration:
+This device obtains time from another device on the local network.
 
-```text
-Hostname: neurokairos
-mDNS name: neurokairos.local
-User: pi
-Password: neurokairos
-```
+Examples:
 
-Workflow:
+- Another Neurokairos server
+- TM2000
+- Meinberg appliance
+- Existing institutional NTP appliance
 
-1. User flashes SD card.
-2. User powers device and connects Ethernet.
-3. Device boots.
-4. User visits:
-
-   http://neurokairos.local
-
-5. Setup wizard appears.
-
----
-
-# First-Boot Identity Generation
-
-Before image creation:
-
-Remove:
-
-- SSH host keys
-- machine-id
-
-On first boot:
-
-Generate:
-
-- SSH host keys
-- machine-id
-- Neurokairos device UUID
-
-Store:
+Configuration:
 
 ```text
-/etc/neurokairos/device-id
+Local NTP server/appliance
+          ↓
+      Neurokairos
 ```
-
-Used for:
-
-- Logging
-- Diagnostics
-- Notifications
-- Internal identification
-
----
-
-# Setup Wizard
-
-The setup wizard gathers:
-
-## Hostname
-
-Example:
-
-```text
-neurokairos-server
-```
-
-Validation:
-
-- Must be unique.
-- Must not equal "neurokairos".
-- Must contain valid hostname characters.
-
-Hostname collision detection:
-
-Attempt mDNS resolution of:
-
-```text
-hostname.local
-```
-
-If already present on the network, reject.
-
-After acceptance:
-
-```text
-hostnamectl set-hostname <hostname>
-```
-
-Restart Avahi.
-
----
-
-## Time Source
-
-Options:
-
-### GNSS/PPS Attached
-
-Local GNSS receiver provides time.
-
-### Neurokairos/NTP Server
 
 User specifies:
 
 ```text
-Primary server IP
-Optional backup server IP
+Primary server IP address
+Optional backup server IP address
 ```
 
-### Institutional NTP Appliance
+Example:
 
-User specifies IP.
+```text
+10.49.98.220
+10.49.98.221
+```
 
-### WAN NTP
-
-Uses public NTP sources.
+This is the recommended configuration for Neurokairos client devices.
 
 ---
 
-## NTP Service
+### Option 3: Internet Time Servers Only
 
-Question:
+This device synchronizes directly to public Internet time servers.
+
+Configuration:
 
 ```text
-Serve NTP to other devices?
+Internet time servers
+          ↓
+      Neurokairos
+```
+
+Useful when:
+
+- No GNSS receiver is available
+- No local NTP server exists
+- Simplicity is preferred over maximum timing accuracy
+
+---
+
+# Serving Time to Other Devices
+
+Separate from the time-source selection:
+
+```text
+Should this device provide NTP service to other devices?
 ```
 
 Options:
@@ -169,118 +120,99 @@ Options:
 - Yes
 - No
 
-This determines whether chrony allows client access.
-
----
-
-## Notifications
-
-Optional:
-
-```text
-ntfy topic
-```
-
-If blank:
-
-Generate:
-
-```text
-neurokairos-<short-id>
-```
-
----
-
-## Security
-
-Allow user to change password.
-
-Strongly recommended but not mandatory for MVP.
-
----
-
-# Avahi / Discovery
-
-Purpose:
-
-- Initial discovery
-- Browser access
-- Convenience
-
-Factory:
-
-```text
-neurokairos.local
-```
-
-Configured:
-
-```text
-<hostname>.local
-```
-
 Examples:
 
+### Building Time Server
+
 ```text
-neurokairos-server.local
-neurokairos-microscope1.local
+GNSS/PPS + WAN backup
+          ↓
+      Neurokairos
+          ↓
+     Other devices
 ```
 
-Avahi is not required for production NTP operation.
+Time source:
+
+- GNSS Receiver Attached
+
+Serve NTP:
+
+- Yes
 
 ---
 
-# NTP Configuration Philosophy
+### Neurokairos Client
 
-Preferred production configuration:
-
-Use reserved DHCP leases or static IP addresses.
-
-Example:
-
-```conf
-server 10.49.98.220 iburst prefer
+```text
+Building NTP server
+          ↓
+      Neurokairos
 ```
 
-Avoid multiple aliases of the same server in chrony.conf.
+Time source:
 
-Do not configure:
+- Local Time Server or Time Appliance
 
-```conf
-server hostname.local
-server hostname.domain.org
-server IP
-```
+Serve NTP:
 
-when all refer to the same device.
+- No
 
 ---
 
-# Deployment Models
+# Notifications (ntfy)
 
-## Model 1: Single Building Time Server
+Neurokairos uses ntfy to send push notifications to phones and computers.
+
+see neurokairos-notifications.md document
+
+The user can continue setup without ntfy if desired.
+
+---
+
+# Recommended Deployment Models
+
+## Model 1: GNSS-Based Building Time Server
 
 ```text
-GNSS or WAN
-      ↓
+GNSS/PPS
+     ↓
 Neurokairos Server
-      ↓
+     ↓
 All Neurokairos Clients
 ```
 
-Recommended default.
+Recommended default deployment.
+
+Configuration:
+
+Time Source:
+
+- GNSS Receiver Attached
+
+Serve NTP:
+
+- Yes
 
 ---
 
-## Model 2: Existing GPS NTP Appliance
+## Model 2: Existing Institutional Time Appliance
 
 ```text
-GPS Appliance
-      ↓
-Neurokairos Clients
+TM2000 / Meinberg / Other Appliance
+                 ↓
+          Neurokairos Clients
 ```
 
-Clients generate local timing outputs.
+Configuration:
+
+Time Source:
+
+- Local Time Server or Time Appliance
+
+Serve NTP:
+
+- No
 
 ---
 
@@ -293,152 +225,21 @@ GNSS Server B
       Clients
 ```
 
-Clients configured with primary and backup servers.
-
----
-
-# HDMI Status Console
-
-If a monitor is connected:
-
-Display:
+Clients configured with:
 
 ```text
-Hostname
-IP address
-MAC address
-
-Web UI URLs
-
-GNSS status
-PPS status
-Chrony status
-
-NTP server information
+Primary server IP
+Backup server IP
 ```
 
-Example:
+Configuration:
 
-Hostname: neurokairos-server
-IP: 10.49.98.220
-MAC: dc:a6:32:12:34:56
+Time Source:
 
-Web UI:
-http://neurokairos-server.local
-http://10.49.98.220
+- Local Time Server or Time Appliance
 
-GNSS: LOCKED
-PPS: OK
-Chrony: SYNCHRONIZED
+Serve NTP:
 
-Login:
-neurokairos login:
+- No
 
-Local login remains available.
-
----
-
-# Notification System
-
-Use ntfy.
-
-Events:
-
-- IP address changed
-- GNSS lost
-- PPS lost
-- Entered holdover
-- Chrony unsynchronized
-- Excessive offset
-- Temperature warning
-- Storage warning
-- Reboot
-- Software update available
-
----
-
-# Chrony Monitoring
-
-Expose through web UI:
-
-- Current source
-- Stratum
-- Offset
-- Frequency correction
-- Holdover state
-- PPS status
-- GNSS lock status
-
-Display both summary and detailed chronyc output.
-
----
-
-# Web UI Pages
-
-## Dashboard
-
-System status.
-
-## Time Sources
-
-Configure chrony.
-
-## Networking
-
-Hostname, IP information, DNS information.
-
-## Notifications
-
-ntfy configuration.
-
-## Diagnostics
-
-Chrony, GNSS, PPS, logs.
-
-## System
-
-Password change, updates, reboot.
-
----
-
-# Software Updates
-
-Provide update mechanism without reimaging.
-
-Minimum:
-
-```bash
-apt update
-apt upgrade
-```
-
-through web UI.
-
-Future:
-
-Dedicated Neurokairos update channel.
-
----
-
-# MVP Exclusions
-
-Not required initially:
-
-- Touchscreen support
-- Physical buttons
-- QR codes
-- Wi-Fi configuration
-- PTP
-- Automatic server discovery
-- Multi-device management dashboard
-- High-availability clustering
-- Cloud services
-
-Focus on:
-
-- Reliable NTP
-- Reliable GNSS/PPS integration
-- Simple deployment
-- Clear diagnostics
-- Notification capability
-- Stable web-based configuration
+This provides resilience against server failure.
