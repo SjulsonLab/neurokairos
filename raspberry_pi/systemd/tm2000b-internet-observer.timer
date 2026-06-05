@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the TM2000B internet-only observer logger every 10 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+AccuracySec=2min
+Persistent=true
+Unit=tm2000b-internet-observer.service
+
+[Install]
+WantedBy=timers.target

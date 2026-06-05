@@ -32,7 +32,7 @@ No GPS hardware is needed on the encoder Pi itself.
 | IRIG-H output (normal) | GPIO 9 | Pi → recorder |
 | IRIG-H output (inverted) | disabled | Pi → recorder (optional) |
 
-> **Warning:** Pins 0–1 (I2C HAT ID), 14–15 (UART), and 4 (PPS) are reserved. The IRIG sender will refuse to use them.
+> **Warning:** Pins 0–1 (I2C HAT ID) and 14–15 (UART) are reserved. GPIO 18 is also reserved when using the Waveshare NEO-M8T HAT PPS input; GPIO 4 is the common Adafruit GPS HAT PPS input.
 
 ## Step 1: Install chrony
 
@@ -52,6 +52,9 @@ This script:
 
 ```bash
 ./test_chrony.sh
+
+# For a specific event window:
+./test_chrony.sh --since "2026-05-20 15:00" --until "2026-05-20 15:20"
 ```
 
 You should see:

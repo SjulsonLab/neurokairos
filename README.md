@@ -55,7 +55,7 @@ The fastest path is to flash a pre-built image. If you'd rather configure a stoc
 Two images are published on the [Releases page]:
 
 - **`neurokairos-sender-*.img.xz`** — `irig_sender` + chrony as an NTP **client**. Use when an external NTP server (e.g., a commercial GPS-NTP appliance) provides time on your network. No GPS hardware on the Pi.
-- **`neurokairos-server-*.img.xz`** — `irig_sender` + chrony as a GPS-disciplined **stratum-1 NTP server** + gpsd + PPS overlay. Use when you have a GPS timing receiver wired to the Pi's UART and PPS to GPIO 4.
+- **`neurokairos-server-*.img.xz`** — `irig_sender` + chrony as a GPS-disciplined **stratum-1 NTP server** + gpsd + PPS overlay. The current test-server image targets the Waveshare NEO-M8T GNSS Timing HAT, whose PPS output is on BCM GPIO 18. Adafruit GPS HATs commonly use BCM GPIO 4 instead, so do not reuse the Waveshare image/config unchanged for Adafruit hardware.
 
 Flash with [Raspberry Pi Imager], then before unmounting the FAT `bootfs` partition drop two files on it:
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=Configure u-blox GNSS PPS behavior at boot
+Wants=gpsd.service chrony.service
+After=gpsd.service
+After=chrony.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/configure_gnss_pps.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

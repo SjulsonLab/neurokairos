@@ -1,0 +1,13 @@
+[Unit]
+Description=Run GNSS status logger every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=60s
+AccuracySec=10s
+Persistent=true
+Unit=gnss-status-logger.service
+
+[Install]
+WantedBy=timers.target
+

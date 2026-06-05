@@ -1,0 +1,12 @@
+[Unit]
+Description=Collect GNSS and chrony status snapshots
+After=gpsd.service chrony.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/log_gnss_status.py --output-dir /home/pi/GNSS_logs
+User=root
+Group=root
+StandardOutput=journal
+StandardError=journal
+

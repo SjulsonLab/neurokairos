@@ -1,0 +1,12 @@
+[Unit]
+Description=Collect chrony and TM2000B observer measurements
+After=chrony.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+Group=pi
+ExecStart=/usr/bin/python3 /usr/local/sbin/log_tm2000b_observer.py --output-dir /home/pi/tm2000b_observer_logs --tm2000b-host 10.49.98.251
+StandardOutput=journal
+StandardError=journal

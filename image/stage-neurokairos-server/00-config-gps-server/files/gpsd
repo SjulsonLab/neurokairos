@@ -1,4 +1,4 @@
-# gpsd configuration for NeuroKairos GPS timing receiver
+# gpsd configuration for NeuroKairos GNSS timing receiver
 START_DAEMON="true"
 GPSD_OPTIONS="-n"
 DEVICES="/dev/ttyAMA0 /dev/pps0"

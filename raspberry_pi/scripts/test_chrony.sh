@@ -6,13 +6,64 @@
 #   - chrony service status
 #   - chronyc tracking output (stratum, root dispersion, sync status)
 #   - chronyc sources output (which sources are reachable)
+#   - chrony/gpsd/gnss-pps journal entries for an optional time window
 #   - gpsd status (if installed, i.e., server mode)
 #   - PPS device availability
 #
 # Usage:
-#   ./test_chrony.sh
+#   ./test_chrony.sh [--since "YYYY-MM-DD HH:MM"] [--until "YYYY-MM-DD HH:MM"] [--lines N]
 
 set -uo pipefail
+
+SINCE_ARG=""
+UNTIL_ARG=""
+JOURNAL_LINES=100
+
+print_usage() {
+    echo "Usage: $0 [--since \"YYYY-MM-DD HH:MM\"] [--until \"YYYY-MM-DD HH:MM\"] [--lines N]"
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --since)
+            shift
+            if [ "$#" -eq 0 ]; then
+                echo "Error: --since requires a value"
+                print_usage
+                exit 1
+            fi
+            SINCE_ARG="$1"
+            ;;
+        --until)
+            shift
+            if [ "$#" -eq 0 ]; then
+                echo "Error: --until requires a value"
+                print_usage
+                exit 1
+            fi
+            UNTIL_ARG="$1"
+            ;;
+        --lines)
+            shift
+            if [ "$#" -eq 0 ]; then
+                echo "Error: --lines requires a value"
+                print_usage
+                exit 1
+            fi
+            JOURNAL_LINES="$1"
+            ;;
+        -h|--help)
+            print_usage
+            exit 0
+            ;;
+        *)
+            echo "Error: unknown argument '$1'"
+            print_usage
+            exit 1
+            ;;
+    esac
+    shift
+done
 
 echo "=== NeuroKairos Time Sync Diagnostics ==="
 echo "Date: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
@@ -50,6 +101,29 @@ echo ""
 echo "--- chronyc sourcestats ---"
 if command -v chronyc >/dev/null 2>&1; then
     chronyc sourcestats 2>/dev/null || echo "(chronyc sourcestats failed)"
+fi
+echo ""
+
+# --- chrony/gpsd/gnss-pps journal window ---
+echo "--- journalctl diagnostics ---"
+if command -v journalctl >/dev/null 2>&1; then
+    if [ -n "${SINCE_ARG}" ] || [ -n "${UNTIL_ARG}" ]; then
+        echo "Window: since='${SINCE_ARG:-<unset>}' until='${UNTIL_ARG:-<unset>}'"
+    else
+        echo "Window: last ${JOURNAL_LINES} lines"
+    fi
+
+    journal_cmd=(journalctl -u chrony -u gpsd -u gnss-pps --no-pager -n "${JOURNAL_LINES}")
+    if [ -n "${SINCE_ARG}" ]; then
+        journal_cmd+=(--since "${SINCE_ARG}")
+    fi
+    if [ -n "${UNTIL_ARG}" ]; then
+        journal_cmd+=(--until "${UNTIL_ARG}")
+    fi
+
+    "${journal_cmd[@]}" 2>/dev/null || echo "(journalctl diagnostics failed)"
+else
+    echo "(journalctl not installed)"
 fi
 echo ""
 
