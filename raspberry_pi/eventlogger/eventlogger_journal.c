@@ -65,6 +65,15 @@ static int join_path(char *dest, size_t dest_len, const char *dir, const char *n
     return 0;
 }
 
+static int append_suffix(char *dest, size_t dest_len, const char *base, const char *suffix)
+{
+    int written = snprintf(dest, dest_len, "%s%s", base, suffix);
+    if (written < 0 || (size_t)written >= dest_len) {
+        return -1;
+    }
+    return 0;
+}
+
 static int64_t timespec_to_ns(const struct timespec *ts)
 {
     return (int64_t)ts->tv_sec * 1000000000LL + (int64_t)ts->tv_nsec;
@@ -365,7 +374,9 @@ int eventlogger_write_input_state(eventlogger_config_t *config)
     if (join_path(state_path, sizeof(state_path), control_dir, "inputs.json") != 0) {
         return -1;
     }
-    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", state_path);
+    if (append_suffix(tmp_path, sizeof(tmp_path), state_path, ".tmp") != 0) {
+        return -1;
+    }
 
     if (mkdir_p(control_dir) != 0) {
         return -1;
