@@ -27,6 +27,9 @@ The logger also writes a daily chrony status TSV in the same directory. This
 status log records the system clock state once per minute, which helps interpret
 event timing quality after an experiment.
 
+When installed, the event logger directory is also shared read-only over SMB so
+the logs can be copied from another computer on the network.
+
 ## Current Test Setup
 
 For the initial Raspberry Pi 5 test setup, the event logger is configured to use
