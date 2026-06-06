@@ -1,0 +1,52 @@
+[global]
+chip = gpiochip0
+journal_dir = /var/lib/neurokairos/eventlogger/journal
+
+# Journals rotate daily by UTC date. Event rows are batch-flushed when either
+# threshold is reached, keeping disk I/O low while bounding data loss on crash.
+flush_interval_ms = 1000
+flush_event_count = 1000
+
+# Chrony tracking status and disk cleanup are checked once per minute.
+status_interval_s = 60
+cleanup_check_interval_s = 60
+
+# When free space falls below the threshold, inactive daily TSV files are
+# deleted oldest-first until the target is restored. Active files are preserved.
+cleanup_threshold_gb = 5
+cleanup_target_gb = 8
+
+# Default per-input deadtime. Set to 0 to disable filtering.
+deadtime_ms = 1
+
+[input DIN1]
+gpio = 5
+enabled = true
+
+[input DIN2]
+gpio = 6
+enabled = true
+
+[input DIN3]
+gpio = 10
+enabled = true
+
+[input DIN4]
+gpio = 11
+enabled = true
+
+[input DIN5]
+gpio = 12
+enabled = true
+
+[input DIN6]
+gpio = 13
+enabled = true
+
+[input DIN7]
+gpio = 16
+enabled = true
+
+[input DIN8]
+gpio = 17
+enabled = true

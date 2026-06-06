@@ -38,7 +38,7 @@ def test_default_config_uses_expected_paths_and_pins():
 def test_event_tsv_schema_has_no_sequence_column():
     header = read_text("raspberry_pi/eventlogger/eventlogger_journal.c")
 
-    assert "utc_time\trealtime_ns\tmonotonic_ns\tinput\tedge\n" in header
+    assert r"utc_time\trealtime_ns\tmonotonic_ns\tinput\tedge\n" in header
     assert "sequence" not in header.lower()
 
 
@@ -60,4 +60,4 @@ def test_makefile_targets_bookworm_libgpiod_v1():
 
     assert "pkg-config --cflags --libs libgpiod" in makefile
     assert "gpiod_line_event_wait_bulk" in source
-    assert "gpiod_request_config" in source
+    assert "gpiod_line_request_config" in source
