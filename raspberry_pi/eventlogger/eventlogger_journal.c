@@ -41,6 +41,15 @@ static int file_exists_and_nonempty(const char *path)
     return st.st_size > 0;
 }
 
+static int join_path(char *dest, size_t dest_len, const char *dir, const char *name)
+{
+    int written = snprintf(dest, dest_len, "%s/%s", dir, name);
+    if (written < 0 || (size_t)written >= dest_len) {
+        return -1;
+    }
+    return 0;
+}
+
 static int64_t timespec_to_ns(const struct timespec *ts)
 {
     return (int64_t)ts->tv_sec * 1000000000LL + (int64_t)ts->tv_nsec;
@@ -248,7 +257,9 @@ static int append_cleanup_log(const char *journal_dir, const char *message, cons
     }
     eventlogger_format_utc_from_ns(timespec_to_ns(&now), date, sizeof(date),
                                    utc_time, sizeof(utc_time));
-    snprintf(log_path, sizeof(log_path), "%s/cleanup_audit.tsv", journal_dir);
+    if (join_path(log_path, sizeof(log_path), journal_dir, "cleanup_audit.tsv") != 0) {
+        return -1;
+    }
     file = fopen(log_path, "a");
     if (!file) {
         return -1;
@@ -287,7 +298,9 @@ int eventlogger_cleanup_if_needed(const eventlogger_config_t *config,
         if (name_len < 4 || strcmp(entry->d_name + name_len - 4, ".tsv") != 0) {
             continue;
         }
-        snprintf(path, sizeof(path), "%s/%s", config->journal_dir, entry->d_name);
+        if (join_path(path, sizeof(path), config->journal_dir, entry->d_name) != 0) {
+            continue;
+        }
         if ((active_event_path && strcmp(path, active_event_path) == 0) ||
             (active_status_path && strcmp(path, active_status_path) == 0)) {
             continue;

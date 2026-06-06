@@ -23,6 +23,21 @@ static void trim(char *text)
     *end = '\0';
 }
 
+static void copy_string(char *dest, size_t dest_len, const char *src)
+{
+    size_t copy_len;
+
+    if (dest_len == 0) {
+        return;
+    }
+    copy_len = strlen(src);
+    if (copy_len >= dest_len) {
+        copy_len = dest_len - 1;
+    }
+    memcpy(dest, src, copy_len);
+    dest[copy_len] = '\0';
+}
+
 static double parse_first_double(const char *value)
 {
     char *end = NULL;
@@ -66,19 +81,19 @@ int eventlogger_read_chrony_status(eventlogger_chrony_status_t *status)
             continue;
         }
         *colon = '\0';
-        snprintf(key, sizeof(key), "%s", line);
-        snprintf(value, sizeof(value), "%s", colon + 1);
+        copy_string(key, sizeof(key), line);
+        copy_string(value, sizeof(value), colon + 1);
         trim(key);
         trim(value);
 
         if (strcmp(key, "Reference ID") == 0) {
-            snprintf(status->reference_id, sizeof(status->reference_id), "%s", value);
+            copy_string(status->reference_id, sizeof(status->reference_id), value);
             parsed_any = 1;
         } else if (strcmp(key, "Stratum") == 0) {
             status->stratum = atoi(value);
             parsed_any = 1;
         } else if (strcmp(key, "Leap status") == 0) {
-            snprintf(status->leap_status, sizeof(status->leap_status), "%s", value);
+            copy_string(status->leap_status, sizeof(status->leap_status), value);
             parsed_any = 1;
         } else if (strcmp(key, "System time") == 0) {
             status->system_time_s = parse_first_double(value);
