@@ -27,7 +27,17 @@ static void trim(char *text)
 
 static void copy_string(char *dest, size_t dest_len, const char *src)
 {
-    snprintf(dest, dest_len, "%s", src);
+    size_t copy_len;
+
+    if (dest_len == 0) {
+        return;
+    }
+    copy_len = strlen(src);
+    if (copy_len >= dest_len) {
+        copy_len = dest_len - 1;
+    }
+    memcpy(dest, src, copy_len);
+    dest[copy_len] = '\0';
 }
 
 static eventlogger_input_t *find_or_add_input(eventlogger_config_t *config, const char *name)

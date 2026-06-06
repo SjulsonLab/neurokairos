@@ -1,5 +1,5 @@
 CC ?= gcc
-CFLAGS ?= -Wall -Wextra -Werror -O2 -std=c11
+CFLAGS ?= -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -O2 -std=c11
 GPIOD_LIBS := $(shell pkg-config --cflags --libs libgpiod 2>/dev/null || echo -lgpiod)
 
 TARGET = neurokairos-eventlogger

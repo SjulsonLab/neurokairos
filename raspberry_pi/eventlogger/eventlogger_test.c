@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static int failures = 0;
@@ -94,13 +95,18 @@ static void test_config_file(void)
 static void test_journal_header(void)
 {
     char dir[] = "/tmp/neurokairos_eventlogger_journal_XXXXXX";
+    int dir_fd;
     eventlogger_config_t config;
     eventlogger_journal_t journal;
     char event_path[512];
     FILE *file;
     char header[256];
 
-    require_true(mkdtemp(dir) != NULL, "create journal temp dir");
+    dir_fd = mkstemp(dir);
+    require_true(dir_fd >= 0, "reserve journal temp path");
+    close(dir_fd);
+    unlink(dir);
+    require_true(mkdir(dir, 0700) == 0, "create journal temp dir");
     eventlogger_config_init(&config);
     snprintf(config.journal_dir, sizeof(config.journal_dir), "%s", dir);
     eventlogger_journal_init(&journal);
