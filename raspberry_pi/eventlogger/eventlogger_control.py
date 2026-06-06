@@ -126,8 +126,42 @@ def choose_export_stem(root_dir: Path, basename: str, start_local: str) -> str:
         local_dt += timedelta(seconds=1)
 
 
+def recording_filename(recording: dict | None) -> str | None:
+    """Return the user-facing TSV filename for a recording dict, if known.
+
+    Inputs:
+        recording: dict | None recording metadata. May contain ``export_stem`` or
+            enough fields to derive one from ``basename`` and ``start_local``.
+
+    Returns:
+        str | None: expected TSV filename, including ``.tsv``, or ``None`` when
+        no filename can be determined.
+    """
+
+    if not recording:
+        return None
+    stem = recording.get("export_stem")
+    if stem:
+        return f"{stem}.tsv"
+    basename = recording.get("basename")
+    start_local = recording.get("start_local")
+    if basename and start_local:
+        local_dt = datetime.fromisoformat(start_local)
+        return f"{basename}_{local_dt.strftime('%Y-%m-%d_%H%M%S')}.tsv"
+    return None
+
+
 def iter_event_rows(root_dir: Path, start_ns: int, stop_ns: int):
-    """Yield journal rows whose realtime_ns falls inside the requested interval."""
+    """Yield journal rows whose UTC timestamps fall inside the requested interval.
+
+    Inputs:
+        root_dir: Path to the event logger root directory.
+        start_ns: int nanoseconds since Unix epoch, UTC inclusive lower bound.
+        stop_ns: int nanoseconds since Unix epoch, UTC inclusive upper bound.
+
+    Yields:
+        str rows from the raw journal TSV, including all raw columns.
+    """
 
     journal_dir = root_dir / "journal"
     if not journal_dir.exists():
@@ -144,6 +178,24 @@ def iter_event_rows(root_dir: Path, start_ns: int, stop_ns: int):
                 event_ns = parse_utc_iso_to_ns(parts[0])
                 if start_ns <= event_ns <= stop_ns:
                     yield line
+
+
+def simplify_event_row(raw_row: str) -> str | None:
+    """Convert one raw journal row into the user-facing recording TSV schema.
+
+    Inputs:
+        raw_row: str raw journal line with tab-separated columns
+            ``utc_time``, ``realtime_ns``, ``monotonic_ns``, ``input``, ``edge``.
+
+    Returns:
+        str | None: simplified TSV row containing ``UTC_time``, ``input``, and
+        ``edge`` only, or ``None`` if the row is malformed.
+    """
+
+    parts = raw_row.rstrip("\n").split("\t")
+    if len(parts) != 5:
+        return None
+    return f"{parts[0]}\t{parts[3]}\t{parts[4]}\n"
 
 
 def write_metadata_yaml(path: Path, recording: dict, hostname: str) -> None:
@@ -163,21 +215,34 @@ def write_metadata_yaml(path: Path, recording: dict, hostname: str) -> None:
 
 
 def export_recording(root_dir: Path, recording: dict, hostname: str) -> dict:
-    """Export one recording interval from the journal into TSV and YAML artifacts."""
+    """Export one recording interval into a user-facing TSV plus YAML metadata.
+
+    Inputs:
+        root_dir: Path to the event logger root directory.
+        recording: dict with UTC/local recording bounds and metadata. ``start_ns``
+            and ``stop_ns`` are integer nanoseconds since Unix epoch when present;
+            otherwise ``start_utc`` and ``stop_utc`` are RFC3339 UTC timestamps.
+        hostname: str host name to store in the YAML sidecar.
+
+    Returns:
+        dict with keys ``recording``, ``tsv_path``, and ``yaml_path``.
+    """
 
     root_dir = Path(root_dir)
     start_ns = int(recording.get("start_ns", parse_utc_iso_to_ns(recording["start_utc"])))
     stop_ns = int(recording.get("stop_ns", parse_utc_iso_to_ns(recording["stop_utc"])))
-    stem = choose_export_stem(root_dir, recording["basename"], recording["start_local"])
+    stem = recording.get("export_stem") or choose_export_stem(root_dir, recording["basename"], recording["start_local"])
     recordings_dir = root_dir / "recordings"
     recordings_dir.mkdir(parents=True, exist_ok=True)
     tsv_path = recordings_dir / f"{stem}.tsv"
     yaml_path = recordings_dir / f"{stem}.yaml"
 
     with tsv_path.open("w", encoding="utf-8") as handle:
-        handle.write("utc_time\trealtime_ns\tmonotonic_ns\tinput\tedge\n")
+        handle.write("UTC_time\tinput\tedge\n")
         for row in iter_event_rows(root_dir, start_ns, stop_ns):
-            handle.write(row)
+            simplified_row = simplify_event_row(row)
+            if simplified_row is not None:
+                handle.write(simplified_row)
 
     write_metadata_yaml(yaml_path, recording, hostname)
     return {
@@ -264,6 +329,9 @@ class EventLoggerControlApp:
                 "active": active is not None,
                 "basename": active.get("basename") if active else None,
                 "start_utc": active.get("start_utc") if active else None,
+                "start_local": active.get("start_local") if active else None,
+                "filename": recording_filename(active),
+                "input_rising_baselines": dict(active.get("input_rising_baselines", {})) if active else {},
             },
             "paths": {
                 "journal_dir": str(self.root_dir / "journal"),
@@ -280,15 +348,25 @@ class EventLoggerControlApp:
         start_ns = utc_ns_from_datetime(now)
         basename_normalized = validate_basename(normalize_basename(basename))
         local_start = now.astimezone(self.local_timezone)
+        inputs_state = read_inputs_state(self.root_dir)
         recording = {
             "basename": basename_normalized,
             "start_utc": format_utc_iso(now),
             "start_ns": start_ns,
             "start_local": local_start.replace(tzinfo=None).isoformat(timespec="seconds"),
             "timezone": self.local_timezone_name,
+            "export_stem": choose_export_stem(
+                self.root_dir,
+                basename_normalized,
+                local_start.replace(tzinfo=None).isoformat(timespec="seconds"),
+            ),
+            "input_rising_baselines": {
+                entry["name"]: int(entry.get("rising_count", 0))
+                for entry in inputs_state
+            },
             "exported_inputs": [
                 entry["name"]
-                for entry in read_inputs_state(self.root_dir)
+                for entry in inputs_state
                 if parse_bool_jsonish(entry.get("enabled", True))
             ],
             "interrupted": False,

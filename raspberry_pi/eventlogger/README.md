@@ -23,6 +23,19 @@ The event TSV files are written under:
 /var/lib/neurokairos/eventlogger/journal
 ```
 
+Saved recordings are separate, user-facing exports sliced from that journal.
+Those recording TSVs keep only:
+
+- UTC timestamp
+- input name
+- edge type
+
+They are written under:
+
+```text
+/var/lib/neurokairos/eventlogger/recordings
+```
+
 The logger also writes a daily chrony status TSV in the same directory. This
 status log records the system clock state once per minute, which helps interpret
 event timing quality after an experiment.

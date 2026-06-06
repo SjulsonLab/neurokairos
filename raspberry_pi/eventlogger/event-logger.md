@@ -62,25 +62,25 @@ The logging API should be designed so alternate capture backends can be added la
 
 Store events in a continuously updated journal.
 
-Each event should contain at minimum:
+The continuous journal should retain the full raw event timing fields needed for
+diagnostics and later analysis.
+
+Saved recordings exported for users should contain only:
 
 - UTC timestamp
-- Monotonic timestamp
-- Input identifier
-- Edge type (rising/falling)
-- Sequence number
+- input identifier
+- edge type (rising/falling)
 
-Suggested schema:
+Suggested recording TSV schema:
 
 ```text
-utc_time
-monotonic_time
+UTC_time
 input
 edge
-sequence_number
 ```
 
-UTC timestamps are authoritative.
+UTC timestamps are authoritative. The raw journal remains the source of truth
+for higher-resolution timing diagnostics.
 
 ---
 

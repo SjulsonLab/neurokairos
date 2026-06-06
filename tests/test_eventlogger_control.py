@@ -125,8 +125,13 @@ def test_export_recording_slices_journal_and_writes_minimal_yaml(tmp_path: Path)
     assert exported_tsv.exists()
     assert exported_yaml.exists()
     assert exported_tsv.name == "events_2026-06-06_105707.tsv"
-    assert "DIN1\trising" in exported_tsv.read_text()
-    assert "DIN2\trising" in exported_tsv.read_text()
+    exported_lines = exported_tsv.read_text().splitlines()
+    assert exported_lines[0] == "UTC_time\tinput\tedge"
+    assert exported_lines[1:] == [
+        "2026-06-06T14:57:07.000004223Z\tDIN1\trising",
+        "2026-06-06T14:57:07.200001113Z\tDIN1\tfalling",
+        "2026-06-06T14:57:08.000003466Z\tDIN2\trising",
+    ]
     yaml_text = exported_yaml.read_text()
     assert "basename: events" in yaml_text
     assert "hostname: testpi" in yaml_text
@@ -159,6 +164,36 @@ def test_export_collision_only_shifts_filename(tmp_path: Path):
     result = module.export_recording(root_dir, recording, hostname="testpi")
     assert Path(result["tsv_path"]).name == "events_2026-06-06_105708.tsv"
     assert result["recording"]["start_local"] == "2026-06-06T10:57:07"
+
+
+def test_export_tsv_drops_raw_nanosecond_columns(tmp_path: Path):
+    module = load_module()
+    root_dir = tmp_path / "eventlogger"
+    make_journal(
+        root_dir,
+        "events_2026-06-06.tsv",
+        [
+            "2026-06-06T14:57:07.000004223Z\t123456789\t987654321\tDIN1\trising\n",
+        ],
+    )
+
+    recording = {
+        "basename": "events",
+        "start_utc": "2026-06-06T14:57:07.000000000Z",
+        "stop_utc": "2026-06-06T14:57:07.000004223Z",
+        "start_local": "2026-06-06T10:57:07",
+        "timezone": "America/New_York",
+        "exported_inputs": ["DIN1"],
+        "interrupted": False,
+    }
+
+    result = module.export_recording(root_dir, recording, hostname="testpi")
+    exported_text = Path(result["tsv_path"]).read_text()
+
+    assert "realtime_ns" not in exported_text
+    assert "monotonic_ns" not in exported_text
+    assert "123456789" not in exported_text
+    assert "987654321" not in exported_text
 
 
 def test_recover_interrupted_recording_creates_interrupted_export(tmp_path: Path):
@@ -195,6 +230,8 @@ def test_status_payload_reads_input_state_and_active_recording(tmp_path: Path):
     control_dir = root_dir / "control"
     active = {
         "basename": "events",
+        "export_stem": "events_2026-06-06_105707",
+        "input_rising_baselines": {"DIN1": 1, "DIN2": 0},
         "start_utc": "2026-06-06T14:57:07.000000000Z",
         "start_local": "2026-06-06T10:57:07",
         "timezone": "America/New_York",
@@ -206,6 +243,8 @@ def test_status_payload_reads_input_state_and_active_recording(tmp_path: Path):
 
     assert status["active_recording"]["active"] is True
     assert status["active_recording"]["basename"] == "events"
+    assert status["active_recording"]["filename"] == "events_2026-06-06_105707.tsv"
+    assert status["active_recording"]["input_rising_baselines"]["DIN1"] == 1
     assert status["inputs"][0]["rising_count"] == 2
     assert status["inputs"][0]["current_level"] == 0
 
@@ -282,6 +321,31 @@ def test_start_rejects_when_recording_already_active(tmp_path: Path):
         raise AssertionError("expected ControlError")
 
 
+def test_start_recording_reserves_export_filename_immediately(tmp_path: Path):
+    module = load_module()
+    root_dir = tmp_path / "eventlogger"
+    make_input_state(root_dir)
+    recordings_dir = root_dir / "recordings"
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    (recordings_dir / "events_2026-06-06_145707.tsv").write_text("existing\n")
+    (recordings_dir / "events_2026-06-06_145707.yaml").write_text("existing\n")
+
+    app = module.EventLoggerControlApp(
+        root_dir=root_dir,
+        hostname="testpi",
+        now_utc=lambda: datetime(2026, 6, 6, 14, 57, 7, tzinfo=timezone.utc),
+        local_timezone_name="America/New_York",
+        local_timezone=timezone.utc,
+    )
+
+    recording = app.start_recording("events")
+    status = app.build_status()
+
+    assert recording["export_stem"] == "events_2026-06-06_145708"
+    assert recording["input_rising_baselines"]["DIN1"] == 2
+    assert status["active_recording"]["filename"] == "events_2026-06-06_145708.tsv"
+
+
 def test_file_contracts_for_control_service_and_ui():
     service = (REPO_ROOT / "raspberry_pi" / "eventlogger" / "eventlogger-control.service").read_text()
     install_script = (REPO_ROOT / "raspberry_pi" / "eventlogger" / "install_eventlogger.sh").read_text()
@@ -290,4 +354,10 @@ def test_file_contracts_for_control_service_and_ui():
     assert "ExecStart=/usr/bin/python3 /usr/local/lib/neurokairos-eventlogger/eventlogger_control.py" in service
     assert "neurokairos-eventlogger-control.service" in install_script
     assert "avahi-publish" in install_script
-    assert "setInterval(pollStatus, 250)" in ui
+    assert "setInterval(() => {" in ui
+    assert "Digital inputs:" in ui
+    assert "Pulses recorded" in ui
+    assert "Filename:" in ui
+    assert "record-light" in ui
+    assert "control-button record-button" in ui
+    assert "control-button stop-button" in ui

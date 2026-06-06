@@ -6,168 +6,475 @@
   <title>Event Logger Test UI</title>
   <style>
     :root {
-      color-scheme: light;
-      --bg: #f4f1ea;
-      --panel: #fffaf1;
-      --text: #182128;
-      --muted: #5e6d78;
-      --line: #d8ccb7;
-      --accent: #1f5e78;
-      --active: #1a8f5b;
-      --inactive: #b8a995;
-      --error: #8d2d2d;
+      color-scheme: dark;
+      --bg: #0d1217;
+      --panel: #151c24;
+      --panel-2: #1b2530;
+      --text: #ecf2f7;
+      --muted: #99a8b7;
+      --line: #2a3643;
+      --accent: #2f7cff;
+      --accent-pressed: #1f5ed0;
+      --active: #42ff8c;
+      --inactive: #5d6774;
+      --error: #ff7d7d;
+      --shadow: rgba(0, 0, 0, 0.28);
     }
+
+    * {
+      box-sizing: border-box;
+    }
+
     body {
       margin: 0;
-      font-family: Georgia, "Times New Roman", serif;
-      background: linear-gradient(180deg, #ede5d8 0%, var(--bg) 100%);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
       color: var(--text);
     }
+
     main {
-      max-width: 980px;
+      max-width: 1040px;
       margin: 0 auto;
-      padding: 32px 20px 48px;
+      padding: 28px 20px 40px;
     }
+
     h1, h2 {
-      margin: 0 0 12px;
+      margin: 0 0 10px;
       font-weight: 600;
+      letter-spacing: 0;
     }
+
+    h1 {
+      font-size: 28px;
+    }
+
+    h2 {
+      font-size: 18px;
+    }
+
     p {
-      margin: 0 0 16px;
+      margin: 0;
       color: var(--muted);
+      line-height: 1.45;
     }
+
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
+      border-radius: 8px;
       padding: 18px;
       margin-bottom: 16px;
+      box-shadow: 0 10px 24px var(--shadow);
     }
-    .row {
+
+    .intro {
       display: flex;
-      gap: 12px;
-      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: end;
       flex-wrap: wrap;
     }
-    input {
-      font: inherit;
-      padding: 10px 12px;
-      border: 1px solid var(--line);
-      min-width: 220px;
-      background: white;
-      color: var(--text);
+
+    .service-status {
+      font-size: 14px;
+      color: var(--muted);
+      white-space: nowrap;
     }
-    button {
-      font: inherit;
-      padding: 10px 14px;
-      border: 1px solid var(--accent);
-      background: var(--accent);
-      color: white;
-      cursor: pointer;
+
+    .recording-row {
+      display: grid;
+      grid-template-columns: minmax(220px, 360px) auto;
+      gap: 12px;
+      align-items: end;
     }
-    button[disabled] {
-      opacity: 0.5;
-      cursor: default;
+
+    .recording-controls {
+      display: inline-flex;
+      gap: 10px;
+      align-items: center;
     }
-    .status {
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .field label {
       color: var(--muted);
       font-size: 14px;
     }
+
+    input {
+      width: 100%;
+      min-width: 0;
+      font: inherit;
+      padding: 11px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #0f151b;
+      color: var(--text);
+      outline: none;
+    }
+
+    input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+
+    .control-button {
+      width: 46px;
+      height: 46px;
+      padding: 0;
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      background: var(--accent);
+      color: #ffffff;
+      font: inherit;
+      cursor: pointer;
+      transition: transform 0.08s ease, background 0.08s ease, border-color 0.08s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .record-icon,
+    .stop-icon {
+      display: inline-block;
+      flex: 0 0 auto;
+    }
+
+    .record-icon {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #ff4f4f;
+      box-shadow: 0 0 12px rgba(255, 79, 79, 0.28);
+    }
+
+    .stop-icon {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      background: currentColor;
+    }
+
+    .control-button:hover:enabled {
+      background: #418bff;
+    }
+
+    .control-button:active:enabled,
+    .control-button.is-active {
+      background: var(--accent-pressed);
+      border-color: var(--accent-pressed);
+      transform: translateY(1px);
+      box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.24);
+    }
+
+    .control-button[disabled] {
+      opacity: 0.45;
+      cursor: default;
+    }
+
+    .stop-button {
+      background: transparent;
+      border-color: var(--line);
+      color: var(--text);
+    }
+
+    .stop-button:hover:enabled {
+      background: #1c2630;
+      border-color: #364353;
+    }
+
+    .recording-status-block {
+      margin-top: 14px;
+      display: grid;
+      gap: 6px;
+    }
+
+    .record-light-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .record-light {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #432222;
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+    }
+
+    .record-light.active {
+      background: #ff4f4f;
+      box-shadow: 0 0 12px rgba(255, 79, 79, 0.6);
+      animation: blink 1s steps(1, end) infinite;
+    }
+
+    .status-line {
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .status-line strong {
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .result-status {
+      margin-top: 12px;
+      font-size: 14px;
+      color: var(--muted);
+      word-break: break-word;
+    }
+
     .error {
+      margin-top: 8px;
+      font-size: 14px;
       color: var(--error);
     }
-    .grid {
+
+    .inputs-layout {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 12px;
+      grid-template-columns: 132px minmax(0, 1fr);
+      column-gap: 10px;
+      row-gap: 8px;
+      align-items: start;
     }
-    .input-card {
-      border: 1px solid var(--line);
-      background: white;
-      padding: 14px;
+
+    .inputs-label {
+      color: var(--muted);
+      font-size: 14px;
+      padding-top: 6px;
     }
+
+    .input-strip {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+
+    .input-stack {
+      width: 54px;
+      display: grid;
+      grid-template-rows: 18px 20px;
+      justify-items: center;
+      row-gap: 5px;
+    }
+
     .indicator {
-      display: inline-block;
       width: 14px;
       height: 14px;
       border-radius: 50%;
       background: var(--inactive);
-      margin-right: 8px;
-      vertical-align: middle;
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
     }
+
     .indicator.high {
       background: var(--active);
+      box-shadow: 0 0 12px rgba(66, 255, 140, 0.35);
     }
-    .kv {
-      font-size: 14px;
+
+    .input-number {
+      font-size: 15px;
       color: var(--muted);
-      margin-top: 8px;
+      line-height: 1;
     }
-    code {
-      font-family: "SFMono-Regular", Consolas, monospace;
+
+    .pulse-strip {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+
+    .pulse-box {
+      width: 54px;
+      height: 26px;
+      padding: 0 6px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    .pulse-label {
+      color: var(--muted);
+      font-size: 14px;
+      padding-top: 4px;
+    }
+
+    @keyframes blink {
+      0%, 49% {
+        opacity: 1;
+      }
+      50%, 100% {
+        opacity: 0.3;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .recording-row {
+        grid-template-columns: 1fr;
+      }
+
+      .inputs-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .inputs-label,
+      .pulse-label {
+        padding-top: 0;
+      }
     }
   </style>
 </head>
 <body>
   <main>
     <div class="panel">
-      <h1>Event Logger Test UI</h1>
-      <p>This page polls input status every 250 ms and exercises the temporary recording API.</p>
-      <div class="status" id="service-status">Loading status...</div>
+      <div class="intro">
+        <div>
+          <h1>Event Logger Test UI</h1>
+          <p>This page polls input status every 250 ms and exercises the temporary recording API.</p>
+        </div>
+        <div class="service-status" id="service-status">Loading status...</div>
+      </div>
     </div>
 
     <div class="panel">
       <h2>Recording</h2>
-      <div class="row">
-        <input id="basename" type="text" placeholder="events">
-        <button id="start-button" type="button">Record</button>
-        <button id="stop-button" type="button">Stop</button>
+      <div class="recording-row">
+        <div class="field">
+          <label for="basename">Basename:</label>
+          <input id="basename" type="text" placeholder="events">
+        </div>
+        <div class="recording-controls">
+          <button id="start-button" class="control-button record-button" type="button" title="Record" aria-label="Record">
+            <span class="record-icon" aria-hidden="true"></span>
+          </button>
+          <button id="stop-button" class="control-button stop-button" type="button" title="Stop" aria-label="Stop">
+            <span class="stop-icon" aria-hidden="true"></span>
+          </button>
+        </div>
       </div>
-      <p class="status" id="recording-status"></p>
-      <p class="status" id="result-status"></p>
-      <p class="status error" id="error-status"></p>
+      <div class="recording-status-block">
+        <div class="record-light-row">
+          <span class="record-light" id="record-light"></span>
+          <span id="record-light-label">Recorder idle</span>
+        </div>
+        <div class="status-line" id="recording-state-line"><strong>Status:</strong> idle</div>
+        <div class="status-line" id="filename-line"><strong>Filename:</strong> not recording</div>
+        <div class="status-line" id="duration-line"><strong>Duration:</strong> 00:00:00</div>
+      </div>
+      <div class="error" id="error-status"></div>
     </div>
 
     <div class="panel">
       <h2>Inputs</h2>
-      <div class="grid" id="inputs"></div>
+      <div class="inputs-layout">
+        <div class="inputs-label">Digital inputs:</div>
+        <div class="input-strip" id="input-indicators"></div>
+        <div class="pulse-label">Pulses recorded</div>
+        <div class="pulse-strip" id="pulse-counts"></div>
+      </div>
     </div>
   </main>
 
   <script>
     let lastRisingCounts = new Map();
+    let latestStatus = null;
 
-    function renderInputs(inputs) {
-      const container = document.getElementById("inputs");
-      container.innerHTML = "";
+    function formatDuration(startUtc) {
+      if (!startUtc) {
+        return "00:00:00";
+      }
+      const startMs = Date.parse(startUtc);
+      if (Number.isNaN(startMs)) {
+        return "00:00:00";
+      }
+      const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+      const hours = String(Math.floor(elapsedSeconds / 3600)).padStart(2, "0");
+      const minutes = String(Math.floor((elapsedSeconds % 3600) / 60)).padStart(2, "0");
+      const seconds = String(elapsedSeconds % 60).padStart(2, "0");
+      return `${hours}:${minutes}:${seconds}`;
+    }
+
+    function renderInputs(status) {
+      const inputs = status.inputs;
+      const baselines = status.active_recording.input_rising_baselines ?? {};
+      const recordingActive = status.active_recording.active;
+      const indicatorContainer = document.getElementById("input-indicators");
+      const pulseContainer = document.getElementById("pulse-counts");
+      indicatorContainer.innerHTML = "";
+      pulseContainer.innerHTML = "";
       for (const input of inputs) {
         const previousRising = lastRisingCounts.get(input.name) ?? input.rising_count;
         const transientHigh = input.current_level === 0 && input.rising_count > previousRising;
         const displayHigh = input.current_level === 1 || transientHigh;
         lastRisingCounts.set(input.name, input.rising_count);
 
-        const card = document.createElement("div");
-        card.className = "input-card";
-        card.innerHTML = `
-          <div><span class="indicator ${displayHigh ? "high" : ""}"></span><strong>${input.name}</strong></div>
-          <div class="kv">GPIO ${input.gpio} | enabled: ${input.enabled}</div>
-          <div class="kv">current_level: ${input.current_level}</div>
-          <div class="kv">last_edge: ${input.last_edge ?? "none"}</div>
-          <div class="kv">last_edge_utc: ${input.last_edge_utc ?? "none"}</div>
-          <div class="kv">rising_count: ${input.rising_count} | falling_count: ${input.falling_count}</div>
+        const inputNumber = String(input.name).replace(/^DIN/i, "");
+        const indicatorStack = document.createElement("div");
+        indicatorStack.className = "input-stack";
+        indicatorStack.innerHTML = `
+          <span class="indicator ${displayHigh ? "high" : ""}" title="${input.name}"></span>
+          <span class="input-number">${inputNumber}</span>
         `;
-        container.appendChild(card);
+        indicatorContainer.appendChild(indicatorStack);
+
+        const baseline = Number(baselines[input.name] ?? 0);
+        const recordingCount = recordingActive ? Math.max(0, Number(input.rising_count) - baseline) : 0;
+        const pulseBox = document.createElement("div");
+        pulseBox.className = "pulse-box";
+        pulseBox.textContent = String(recordingCount);
+        pulseContainer.appendChild(pulseBox);
       }
+    }
+
+    function renderStatus(status) {
+      latestStatus = status;
+      const active = status.active_recording.active;
+      const startButton = document.getElementById("start-button");
+      const stopButton = document.getElementById("stop-button");
+      const basenameInput = document.getElementById("basename");
+      const recordLight = document.getElementById("record-light");
+      const recordLightLabel = document.getElementById("record-light-label");
+
+      document.getElementById("service-status").textContent =
+        `capture service: ${status.capture_service_running ? "running" : "not running"} | control service: running`;
+
+      startButton.classList.toggle("is-active", active);
+      startButton.disabled = active;
+      stopButton.disabled = !active;
+      basenameInput.disabled = active;
+      recordLight.classList.toggle("active", active);
+      recordLightLabel.textContent = active ? "Recording in progress" : "Recorder idle";
+
+      document.getElementById("recording-state-line").innerHTML = active
+        ? "<strong>Status:</strong> recording"
+        : "<strong>Status:</strong> idle";
+      document.getElementById("filename-line").innerHTML = active && status.active_recording.filename
+        ? `<strong>Filename:</strong> ${status.active_recording.filename}`
+        : "<strong>Filename:</strong> not recording";
+      document.getElementById("duration-line").innerHTML = `<strong>Duration:</strong> ${active ? formatDuration(status.active_recording.start_utc) : "00:00:00"}`;
+
+      renderInputs(status);
     }
 
     async function pollStatus() {
       const response = await fetch("/v1/status");
       const status = await response.json();
-      document.getElementById("service-status").textContent =
-        `capture service: ${status.capture_service_running ? "running" : "not running"} | control service: running`;
-      document.getElementById("recording-status").textContent = status.active_recording.active
-        ? `Active recording: ${status.active_recording.basename} since ${status.active_recording.start_utc}`
-        : "No active recording";
-      renderInputs(status.inputs);
+      renderStatus(status);
     }
 
     async function startRecording() {
@@ -183,8 +490,6 @@
         document.getElementById("error-status").textContent = payload.error;
         return;
       }
-      document.getElementById("result-status").textContent =
-        `Recording started as ${payload.recording.basename}`;
       await pollStatus();
     }
 
@@ -196,8 +501,6 @@
         document.getElementById("error-status").textContent = payload.error;
         return;
       }
-      document.getElementById("result-status").textContent =
-        `Exported ${payload.tsv_path} and ${payload.yaml_path}`;
       await pollStatus();
     }
 
@@ -207,7 +510,18 @@
     pollStatus().catch((error) => {
       document.getElementById("error-status").textContent = String(error);
     });
-    setInterval(pollStatus, 250);
+
+    setInterval(() => {
+      if (latestStatus) {
+        renderStatus(latestStatus);
+      }
+    }, 250);
+
+    setInterval(() => {
+      pollStatus().catch((error) => {
+        document.getElementById("error-status").textContent = String(error);
+      });
+    }, 250);
   </script>
 </body>
 </html>
