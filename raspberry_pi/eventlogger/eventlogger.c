@@ -34,6 +34,17 @@ static const char *edge_name(int event_type)
     return "unknown";
 }
 
+static int edge_level(int event_type)
+{
+    if (event_type == GPIOD_LINE_EVENT_RISING_EDGE) {
+        return 1;
+    }
+    if (event_type == GPIOD_LINE_EVENT_FALLING_EDGE) {
+        return 0;
+    }
+    return 0;
+}
+
 static int find_input_for_line(struct gpiod_line *line,
                                eventlogger_input_t **line_inputs,
                                struct gpiod_line **lines,
@@ -49,7 +60,7 @@ static int find_input_for_line(struct gpiod_line *line,
     return -1;
 }
 
-static int run_event_loop(const eventlogger_config_t *config)
+static int run_event_loop(eventlogger_config_t *config)
 {
     struct gpiod_chip *chip = NULL;
     struct gpiod_line_bulk requested = GPIOD_LINE_BULK_INITIALIZER;
@@ -87,7 +98,7 @@ static int run_event_loop(const eventlogger_config_t *config)
         }
         gpiod_line_bulk_add(&requested, line);
         lines[line_count] = line;
-        line_inputs[line_count] = (eventlogger_input_t *)&config->inputs[i];
+        line_inputs[line_count] = &config->inputs[i];
         line_count++;
     }
 
@@ -109,6 +120,13 @@ static int run_event_loop(const eventlogger_config_t *config)
     }
 
     fprintf(stderr, "Logging %d GPIO inputs to %s\n", line_count, config->journal_dir);
+    for (i = 0; i < line_count; i++) {
+        int value = gpiod_line_get_value(lines[i]);
+        if (value >= 0) {
+            line_inputs[i]->current_level = value ? 1 : 0;
+        }
+    }
+    eventlogger_write_input_state(config);
 
     while (keep_running) {
         struct timespec timeout = {.tv_sec = 1, .tv_nsec = 0};
@@ -161,6 +179,17 @@ static int run_event_loop(const eventlogger_config_t *config)
                                                         edge_name(event_buffer[event_index].event_type)) != 0) {
                         fprintf(stderr, "Failed to write event journal row\n");
                     }
+                    input->current_level = edge_level(event_buffer[event_index].event_type);
+                    if (event_buffer[event_index].event_type == GPIOD_LINE_EVENT_RISING_EDGE) {
+                        input->rising_count++;
+                        snprintf(input->last_edge, sizeof(input->last_edge), "rising");
+                    } else if (event_buffer[event_index].event_type == GPIOD_LINE_EVENT_FALLING_EDGE) {
+                        input->falling_count++;
+                        snprintf(input->last_edge, sizeof(input->last_edge), "falling");
+                    }
+                    eventlogger_format_utc_from_ns(realtime_ns, (char[11]){0}, 11,
+                                                   input->last_edge_utc, sizeof(input->last_edge_utc));
+                    eventlogger_write_input_state(config);
                 }
             }
         }

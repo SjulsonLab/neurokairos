@@ -32,6 +32,21 @@ static int mkdir_p(const char *path)
     return 0;
 }
 
+static void parent_dir_from_path(const char *path, char *dest, size_t dest_len)
+{
+    char tmp[EVENTLOGGER_PATH_LEN];
+    char *slash;
+
+    snprintf(tmp, sizeof(tmp), "%s", path);
+    slash = strrchr(tmp, '/');
+    if (!slash || slash == tmp) {
+        snprintf(dest, dest_len, ".");
+        return;
+    }
+    *slash = '\0';
+    snprintf(dest, dest_len, "%s", tmp);
+}
+
 static int file_exists_and_nonempty(const char *path)
 {
     struct stat st;
@@ -319,6 +334,81 @@ int eventlogger_cleanup_if_needed(const eventlogger_config_t *config,
         if (unlink(candidates[i].path) == 0) {
             append_cleanup_log(config->journal_dir, "deleted", candidates[i].path);
         }
+    }
+    return 0;
+}
+
+int eventlogger_write_input_state(eventlogger_config_t *config)
+{
+    char root_dir[EVENTLOGGER_PATH_LEN];
+    char control_dir[EVENTLOGGER_PATH_LEN];
+    char state_path[EVENTLOGGER_PATH_LEN];
+    char tmp_path[EVENTLOGGER_PATH_LEN];
+    char generated_date[11];
+    char generated_time[32];
+    struct timespec now;
+    FILE *file;
+    int i;
+
+    if (clock_gettime(CLOCK_REALTIME, &now) != 0) {
+        return -1;
+    }
+    if (eventlogger_format_utc_from_ns(timespec_to_ns(&now), generated_date, sizeof(generated_date),
+                                       generated_time, sizeof(generated_time)) != 0) {
+        return -1;
+    }
+
+    parent_dir_from_path(config->journal_dir, root_dir, sizeof(root_dir));
+    if (join_path(control_dir, sizeof(control_dir), root_dir, "control") != 0) {
+        return -1;
+    }
+    if (join_path(state_path, sizeof(state_path), control_dir, "inputs.json") != 0) {
+        return -1;
+    }
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", state_path);
+
+    if (mkdir_p(control_dir) != 0) {
+        return -1;
+    }
+    file = fopen(tmp_path, "w");
+    if (!file) {
+        return -1;
+    }
+
+    fprintf(file, "{\n");
+    fprintf(file, "  \"generated_utc\": \"%s\",\n", generated_time);
+    fprintf(file, "  \"inputs\": [\n");
+    for (i = 0; i < config->input_count; i++) {
+        eventlogger_input_t *input = &config->inputs[i];
+        fprintf(file, "    {\n");
+        fprintf(file, "      \"name\": \"%s\",\n", input->name);
+        fprintf(file, "      \"gpio\": %d,\n", input->gpio);
+        fprintf(file, "      \"enabled\": %s,\n", input->enabled ? "true" : "false");
+        fprintf(file, "      \"current_level\": %d,\n", input->current_level);
+        if (input->last_edge[0] != '\0') {
+            fprintf(file, "      \"last_edge\": \"%s\",\n", input->last_edge);
+        } else {
+            fprintf(file, "      \"last_edge\": null,\n");
+        }
+        if (input->last_edge_utc[0] != '\0') {
+            fprintf(file, "      \"last_edge_utc\": \"%s\",\n", input->last_edge_utc);
+        } else {
+            fprintf(file, "      \"last_edge_utc\": null,\n");
+        }
+        fprintf(file, "      \"rising_count\": %llu,\n", input->rising_count);
+        fprintf(file, "      \"falling_count\": %llu\n", input->falling_count);
+        fprintf(file, "    }%s\n", (i == config->input_count - 1) ? "" : ",");
+    }
+    fprintf(file, "  ]\n");
+    fprintf(file, "}\n");
+
+    if (fclose(file) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+    if (rename(tmp_path, state_path) != 0) {
+        unlink(tmp_path);
+        return -1;
     }
     return 0;
 }

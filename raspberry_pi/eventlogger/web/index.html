@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Event Logger Test UI</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f1ea;
+      --panel: #fffaf1;
+      --text: #182128;
+      --muted: #5e6d78;
+      --line: #d8ccb7;
+      --accent: #1f5e78;
+      --active: #1a8f5b;
+      --inactive: #b8a995;
+      --error: #8d2d2d;
+    }
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      background: linear-gradient(180deg, #ede5d8 0%, var(--bg) 100%);
+      color: var(--text);
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px 20px 48px;
+    }
+    h1, h2 {
+      margin: 0 0 12px;
+      font-weight: 600;
+    }
+    p {
+      margin: 0 0 16px;
+      color: var(--muted);
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      padding: 18px;
+      margin-bottom: 16px;
+    }
+    .row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    input {
+      font: inherit;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      min-width: 220px;
+      background: white;
+      color: var(--text);
+    }
+    button {
+      font: inherit;
+      padding: 10px 14px;
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: white;
+      cursor: pointer;
+    }
+    button[disabled] {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .status {
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .error {
+      color: var(--error);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .input-card {
+      border: 1px solid var(--line);
+      background: white;
+      padding: 14px;
+    }
+    .indicator {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--inactive);
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+    .indicator.high {
+      background: var(--active);
+    }
+    .kv {
+      font-size: 14px;
+      color: var(--muted);
+      margin-top: 8px;
+    }
+    code {
+      font-family: "SFMono-Regular", Consolas, monospace;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="panel">
+      <h1>Event Logger Test UI</h1>
+      <p>This page polls input status every 250 ms and exercises the temporary recording API.</p>
+      <div class="status" id="service-status">Loading status...</div>
+    </div>
+
+    <div class="panel">
+      <h2>Recording</h2>
+      <div class="row">
+        <input id="basename" type="text" placeholder="events">
+        <button id="start-button" type="button">Record</button>
+        <button id="stop-button" type="button">Stop</button>
+      </div>
+      <p class="status" id="recording-status"></p>
+      <p class="status" id="result-status"></p>
+      <p class="status error" id="error-status"></p>
+    </div>
+
+    <div class="panel">
+      <h2>Inputs</h2>
+      <div class="grid" id="inputs"></div>
+    </div>
+  </main>
+
+  <script>
+    let lastRisingCounts = new Map();
+
+    function renderInputs(inputs) {
+      const container = document.getElementById("inputs");
+      container.innerHTML = "";
+      for (const input of inputs) {
+        const previousRising = lastRisingCounts.get(input.name) ?? input.rising_count;
+        const transientHigh = input.current_level === 0 && input.rising_count > previousRising;
+        const displayHigh = input.current_level === 1 || transientHigh;
+        lastRisingCounts.set(input.name, input.rising_count);
+
+        const card = document.createElement("div");
+        card.className = "input-card";
+        card.innerHTML = `
+          <div><span class="indicator ${displayHigh ? "high" : ""}"></span><strong>${input.name}</strong></div>
+          <div class="kv">GPIO ${input.gpio} | enabled: ${input.enabled}</div>
+          <div class="kv">current_level: ${input.current_level}</div>
+          <div class="kv">last_edge: ${input.last_edge ?? "none"}</div>
+          <div class="kv">last_edge_utc: ${input.last_edge_utc ?? "none"}</div>
+          <div class="kv">rising_count: ${input.rising_count} | falling_count: ${input.falling_count}</div>
+        `;
+        container.appendChild(card);
+      }
+    }
+
+    async function pollStatus() {
+      const response = await fetch("/v1/status");
+      const status = await response.json();
+      document.getElementById("service-status").textContent =
+        `capture service: ${status.capture_service_running ? "running" : "not running"} | control service: running`;
+      document.getElementById("recording-status").textContent = status.active_recording.active
+        ? `Active recording: ${status.active_recording.basename} since ${status.active_recording.start_utc}`
+        : "No active recording";
+      renderInputs(status.inputs);
+    }
+
+    async function startRecording() {
+      document.getElementById("error-status").textContent = "";
+      const basename = document.getElementById("basename").value;
+      const response = await fetch("/v1/recordings/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ basename })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        document.getElementById("error-status").textContent = payload.error;
+        return;
+      }
+      document.getElementById("result-status").textContent =
+        `Recording started as ${payload.recording.basename}`;
+      await pollStatus();
+    }
+
+    async function stopRecording() {
+      document.getElementById("error-status").textContent = "";
+      const response = await fetch("/v1/recordings/stop", { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok) {
+        document.getElementById("error-status").textContent = payload.error;
+        return;
+      }
+      document.getElementById("result-status").textContent =
+        `Exported ${payload.tsv_path} and ${payload.yaml_path}`;
+      await pollStatus();
+    }
+
+    document.getElementById("start-button").addEventListener("click", startRecording);
+    document.getElementById("stop-button").addEventListener("click", stopRecording);
+
+    pollStatus().catch((error) => {
+      document.getElementById("error-status").textContent = String(error);
+    });
+    setInterval(pollStatus, 250);
+  </script>
+</body>
+</html>

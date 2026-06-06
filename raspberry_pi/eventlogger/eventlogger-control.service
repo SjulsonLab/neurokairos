@@ -1,0 +1,16 @@
+[Unit]
+Description=NeuroKairos Event Logger Control Service
+After=network-online.target neurokairos-eventlogger.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/neurokairos-eventlogger/eventlogger_control.py --root-dir /var/lib/neurokairos/eventlogger --host 0.0.0.0 --port 80
+Restart=always
+RestartSec=5
+User=root
+WorkingDirectory=/var/lib/neurokairos/eventlogger
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+[Install]
+WantedBy=multi-user.target

@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SMB_CONF="/etc/samba/smb.conf"
 SMB_SHARE_MARKER_BEGIN="# BEGIN NeuroKairos event logger share"
 SMB_SHARE_MARKER_END="# END NeuroKairos event logger share"
+INSTALL_LIB_DIR="/usr/local/lib/neurokairos-eventlogger"
 
 echo "Installing NeuroKairos event logger..."
 
@@ -18,18 +19,26 @@ if ! pkg-config --exists libgpiod; then
     exit 1
 fi
 
-if ! command -v testparm >/dev/null 2>&1; then
-    echo "Installing Samba support..."
+if ! command -v testparm >/dev/null 2>&1 || ! command -v avahi-publish >/dev/null 2>&1; then
+    echo "Installing Samba and mDNS support..."
     sudo apt-get update
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y samba
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y samba avahi-utils
 fi
 
 make -C "$SCRIPT_DIR"
 
 sudo install -m 0755 "$SCRIPT_DIR/neurokairos-eventlogger" /usr/local/bin/neurokairos-eventlogger
+sudo install -m 0755 "$SCRIPT_DIR/eventlogger_export.py" /usr/local/bin/neurokairos-eventlogger-export
 sudo install -d -m 0755 /etc/neurokairos
 sudo install -d -m 0755 /var/lib/neurokairos/eventlogger
+sudo install -d -m 0755 /var/lib/neurokairos/eventlogger/control
 sudo install -d -m 0755 /var/lib/neurokairos/eventlogger/journal
+sudo install -d -m 0755 /var/lib/neurokairos/eventlogger/recordings
+sudo install -d -m 0755 "$INSTALL_LIB_DIR"
+sudo install -d -m 0755 "$INSTALL_LIB_DIR/web"
+sudo install -m 0644 "$SCRIPT_DIR/eventlogger_control.py" "$INSTALL_LIB_DIR/eventlogger_control.py"
+sudo install -m 0755 "$SCRIPT_DIR/publish_neurokairos_alias.sh" "$INSTALL_LIB_DIR/publish_neurokairos_alias.sh"
+sudo install -m 0644 "$SCRIPT_DIR/web/index.html" "$INSTALL_LIB_DIR/web/index.html"
 
 if [ ! -f /etc/neurokairos/eventlogger.conf ]; then
     sudo install -m 0644 "$SCRIPT_DIR/eventlogger.conf.example" /etc/neurokairos/eventlogger.conf
@@ -53,13 +62,23 @@ sudo systemctl enable smbd
 sudo systemctl restart smbd
 
 sudo install -m 0644 "$SCRIPT_DIR/eventlogger.service" /etc/systemd/system/neurokairos-eventlogger.service
+sudo install -m 0644 "$SCRIPT_DIR/eventlogger-control.service" /etc/systemd/system/neurokairos-eventlogger-control.service
+sudo install -m 0644 "$SCRIPT_DIR/neurokairos-local-alias.service" /etc/systemd/system/neurokairos-local-alias.service
 sudo systemctl daemon-reload
 sudo systemctl enable neurokairos-eventlogger.service
+sudo systemctl enable neurokairos-eventlogger-control.service
+sudo systemctl enable neurokairos-local-alias.service
 sudo systemctl restart neurokairos-eventlogger.service
+sudo systemctl restart neurokairos-eventlogger-control.service
+sudo systemctl restart neurokairos-local-alias.service
 
 echo "Event logger installed."
 echo "Useful commands:"
 echo "  sudo systemctl status neurokairos-eventlogger"
+echo "  sudo systemctl status neurokairos-eventlogger-control"
 echo "  sudo journalctl -u neurokairos-eventlogger -f"
+echo "  sudo journalctl -u neurokairos-eventlogger-control -f"
 echo "  ls -lh /var/lib/neurokairos/eventlogger/journal"
+echo "  ls -lh /var/lib/neurokairos/eventlogger/recordings"
 echo "  smbclient -L localhost -N"
+echo "  open http://neurokairos.local"

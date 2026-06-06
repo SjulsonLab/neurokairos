@@ -80,6 +80,18 @@ def test_control_module_exists_and_normalizes_empty_basename():
     assert module.normalize_basename("") == "events"
     assert module.normalize_basename("   ") == "events"
     assert module.normalize_basename("mouse123") == "mouse123"
+    assert module.normalize_basename("mouse-123_a") == "mouse-123_a"
+
+
+def test_invalid_basenames_are_rejected():
+    module = load_module()
+
+    for invalid in (".hidden", "-bad", "_bad", "bad/name", "bad\\name", "bad:name", "bad*name", "bad?name"):
+        try:
+            module.validate_basename(invalid)
+        except module.ControlError:
+            continue
+        raise AssertionError(f"expected invalid basename to fail: {invalid}")
 
 
 def test_export_recording_slices_journal_and_writes_minimal_yaml(tmp_path: Path):

@@ -17,6 +17,11 @@ typedef struct {
     int enabled;
     int deadtime_ms;
     int64_t last_event_monotonic_ns;
+    int current_level;
+    unsigned long long rising_count;
+    unsigned long long falling_count;
+    char last_edge[16];
+    char last_edge_utc[32];
 } eventlogger_input_t;
 
 typedef struct {
@@ -147,6 +152,16 @@ int eventlogger_journal_maybe_flush(eventlogger_journal_t *journal,
 int eventlogger_journal_write_status(eventlogger_journal_t *journal,
                                      const eventlogger_config_t *config,
                                      const eventlogger_chrony_status_t *status);
+
+/*
+ * Write a JSON snapshot of live input states for the control service/UI.
+ *
+ * Inputs: config supplies the input definitions and current input runtime
+ * state; journal_dir determines the parent eventlogger data directory.
+ * Shapes/units: scalar snapshot, counters are event counts.
+ * Returns: 0 on success, -1 on filesystem/write errors.
+ */
+int eventlogger_write_input_state(eventlogger_config_t *config);
 
 /*
  * Query chronyc tracking and parse the clock status fields used by the logger.
