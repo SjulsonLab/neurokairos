@@ -10,6 +10,8 @@ SMB_CONF="/etc/samba/smb.conf"
 SMB_SHARE_MARKER_BEGIN="# BEGIN NeuroKairos event logger share"
 SMB_SHARE_MARKER_END="# END NeuroKairos event logger share"
 INSTALL_LIB_DIR="/usr/local/lib/neurokairos-eventlogger"
+JOURNAL_README_PATH="/var/lib/neurokairos/eventlogger/journal/README.txt"
+RECORDINGS_README_PATH="/var/lib/neurokairos/eventlogger/recordings/README.txt"
 
 echo "Installing NeuroKairos event logger..."
 
@@ -34,6 +36,38 @@ sudo install -d -m 0755 /var/lib/neurokairos/eventlogger
 sudo install -d -m 0755 /var/lib/neurokairos/eventlogger/control
 sudo install -d -m 0755 /var/lib/neurokairos/eventlogger/journal
 sudo install -d -m 0755 /var/lib/neurokairos/eventlogger/recordings
+sudo install -d -m 0755 /var/lib/neurokairos/eventlogger/journal/2026-06_journal
+sudo install -d -m 0755 /var/lib/neurokairos/eventlogger/recordings/2026-06_recordings
+sudo tee "$JOURNAL_README_PATH" >/dev/null <<'EOF'
+NeuroKairos event journal
+
+This folder contains the raw, append-only TTL journal written by the capture
+daemon. Files are organized by month in subfolders such as `2026-06_journal/`.
+These logs are the source of truth for diagnostics and later export.
+If you forgot to hit record or accidentally deleted your event recording, the
+UTC timestamps for the events can be retrieved from these logs.
+
+Retention policy:
+- The oldest inactive journal files are deleted automatically when free disk
+  space falls below the configured cleanup threshold.
+- Active files are never deleted.
+- Journal files are not user-editable.
+EOF
+sudo tee "$RECORDINGS_README_PATH" >/dev/null <<'EOF'
+NeuroKairos recordings
+
+This folder contains exported user recordings derived from the raw journal.
+Files are organized by month in subfolders such as `2026-06_recordings/`.
+Each recording includes a TSV file containing the UTC timestamps of detected
+events, as well as a YAML file containing the metadata and user's notes.
+
+Retention policy:
+- The oldest inactive recording exports are deleted automatically when free
+  disk space falls below the configured cleanup threshold.
+- Active recordings are preserved until they are stopped and exported.
+- The recording files are user-editable, but we recommend against editing
+  them in place.
+EOF
 sudo install -d -m 0755 "$INSTALL_LIB_DIR"
 sudo install -d -m 0755 "$INSTALL_LIB_DIR/web"
 sudo install -m 0644 "$SCRIPT_DIR/eventlogger_control.py" "$INSTALL_LIB_DIR/eventlogger_control.py"

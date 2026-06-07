@@ -150,10 +150,28 @@ def atomic_write_text(path: Path, text: str) -> None:
     os.replace(tmp_path, path)
 
 
+def month_bucket_from_iso(text: str) -> str:
+    """Return the ``YYYY-MM`` bucket for an ISO datetime string."""
+
+    return datetime.fromisoformat(text).strftime("%Y-%m")
+
+
+def journal_bucket_dir(root_dir: Path, date_text: str) -> Path:
+    """Return the month-organized journal directory for a UTC date string."""
+
+    return Path(root_dir) / "journal" / f"{month_bucket_from_iso(date_text[:10])}_journal"
+
+
+def recordings_bucket_dir(root_dir: Path, start_local: str) -> Path:
+    """Return the month-organized recordings directory for a local start time."""
+
+    return Path(root_dir) / "recordings" / f"{month_bucket_from_iso(start_local)}_recordings"
+
+
 def choose_export_stem(root_dir: Path, basename: str, start_local: str) -> str:
     """Choose a collision-free local-time stem without changing the true start time."""
 
-    recordings_dir = root_dir / "recordings"
+    recordings_dir = recordings_bucket_dir(root_dir, start_local)
     recordings_dir.mkdir(parents=True, exist_ok=True)
     local_dt = datetime.fromisoformat(start_local)
     while True:
@@ -202,10 +220,10 @@ def iter_event_rows(root_dir: Path, start_ns: int, stop_ns: int):
         str rows from the raw journal TSV, including all raw columns.
     """
 
-    journal_dir = root_dir / "journal"
+    journal_dir = Path(root_dir) / "journal"
     if not journal_dir.exists():
         return
-    for path in sorted(journal_dir.glob("all_events_*.tsv")):
+    for path in sorted(journal_dir.rglob("all_events_*.tsv")):
         with path.open("r", encoding="utf-8") as handle:
             header = handle.readline()
             if not header:
@@ -273,7 +291,7 @@ def export_recording(root_dir: Path, recording: dict, hostname: str) -> dict:
     start_ns = int(recording.get("start_ns", parse_utc_iso_to_ns(recording["start_utc"])))
     stop_ns = int(recording.get("stop_ns", parse_utc_iso_to_ns(recording["stop_utc"])))
     stem = recording.get("export_stem") or choose_export_stem(root_dir, recording["basename"], recording["start_local"])
-    recordings_dir = root_dir / "recordings"
+    recordings_dir = recordings_bucket_dir(root_dir, recording["start_local"])
     recordings_dir.mkdir(parents=True, exist_ok=True)
     tsv_path = recordings_dir / f"{stem}.tsv"
     yaml_path = recordings_dir / f"{stem}.yaml"

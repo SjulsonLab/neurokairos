@@ -65,6 +65,21 @@ static int join_path(char *dest, size_t dest_len, const char *dir, const char *n
     return 0;
 }
 
+static int build_month_bucket(char *dest, size_t dest_len, const char *root_dir,
+                              const char *date, const char *suffix)
+{
+    int written;
+
+    if (strlen(date) < 7) {
+        return -1;
+    }
+    written = snprintf(dest, dest_len, "%s/%.7s_%s", root_dir, date, suffix);
+    if (written < 0 || (size_t)written >= dest_len) {
+        return -1;
+    }
+    return 0;
+}
+
 static int append_suffix(char *dest, size_t dest_len, const char *base, const char *suffix)
 {
     int written = snprintf(dest, dest_len, "%s%s", base, suffix);
@@ -122,10 +137,14 @@ void eventlogger_journal_close(eventlogger_journal_t *journal)
 
 static int open_daily_file(FILE **file, char *stored_date, size_t stored_date_len,
                            char *stored_path, size_t stored_path_len,
-                           const char *journal_dir, const char *prefix,
+                           const char *journal_dir, const char *bucket_suffix, const char *prefix,
                            const char *date, const char *header)
 {
+    char bucket_dir[EVENTLOGGER_PATH_LEN];
+    char filename[EVENTLOGGER_PATH_LEN];
     int needs_header;
+    size_t prefix_len;
+    size_t date_len;
 
     if (*file && strcmp(stored_date, date) == 0) {
         return 0;
@@ -140,8 +159,26 @@ static int open_daily_file(FILE **file, char *stored_date, size_t stored_date_le
         return -1;
     }
 
+    if (build_month_bucket(bucket_dir, sizeof(bucket_dir), journal_dir, date, bucket_suffix) != 0) {
+        return -1;
+    }
+    if (mkdir_p(bucket_dir) != 0) {
+        return -1;
+    }
+
     snprintf(stored_date, stored_date_len, "%s", date);
-    snprintf(stored_path, stored_path_len, "%s/%s_%s.tsv", journal_dir, prefix, date);
+    prefix_len = strlen(prefix);
+    date_len = strlen(date);
+    if (prefix_len + 1 + date_len + 4 + 1 > sizeof(filename)) {
+        return -1;
+    }
+    memcpy(filename, prefix, prefix_len);
+    filename[prefix_len] = '_';
+    memcpy(filename + prefix_len + 1, date, date_len);
+    memcpy(filename + prefix_len + 1 + date_len, ".tsv", 5);
+    if (join_path(stored_path, stored_path_len, bucket_dir, filename) != 0) {
+        return -1;
+    }
     needs_header = !file_exists_and_nonempty(stored_path);
 
     *file = fopen(stored_path, "a");
@@ -170,7 +207,7 @@ int eventlogger_journal_write_event(eventlogger_journal_t *journal,
     }
     if (open_daily_file(&journal->event_file, journal->event_date, sizeof(journal->event_date),
                         journal->event_path, sizeof(journal->event_path),
-                        config->journal_dir, "all_events", date,
+                        config->journal_dir, "journal", "all_events", date,
                         "utc_time\trealtime_ns\tmonotonic_ns\tinput\tedge\n") != 0) {
         return -1;
     }
@@ -200,7 +237,7 @@ int eventlogger_journal_write_status(eventlogger_journal_t *journal,
     }
     if (open_daily_file(&journal->status_file, journal->status_date, sizeof(journal->status_date),
                         journal->status_path, sizeof(journal->status_path),
-                        config->journal_dir, "chrony_status", date,
+                        config->journal_dir, "journal", "chrony_status", date,
                         "timestamp_utc\treference_id\tstratum\tleap_status\tsystem_time_s\tlast_offset_s\trms_offset_s\troot_delay_s\troot_dispersion_s\tfrequency_ppm\tskew_ppm\n") != 0) {
         return -1;
     }
@@ -317,24 +354,47 @@ int eventlogger_cleanup_if_needed(const eventlogger_config_t *config,
     while ((entry = readdir(dir)) != NULL && count < 512) {
         struct stat st;
         char path[EVENTLOGGER_PATH_LEN];
-        size_t name_len = strlen(entry->d_name);
+        char nested_path[EVENTLOGGER_PATH_LEN];
 
-        if (name_len < 4 || strcmp(entry->d_name + name_len - 4, ".tsv") != 0) {
+        if (strcmp(entry->d_name, "cleanup_audit.tsv") == 0) {
             continue;
         }
         if (join_path(path, sizeof(path), config->journal_dir, entry->d_name) != 0) {
             continue;
         }
-        if ((active_event_path && strcmp(path, active_event_path) == 0) ||
-            (active_status_path && strcmp(path, active_status_path) == 0)) {
+        if (stat(path, &st) != 0) {
             continue;
         }
-        if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
-            continue;
+        if (S_ISDIR(st.st_mode)) {
+            DIR *month_dir;
+            struct dirent *month_entry;
+
+            month_dir = opendir(path);
+            if (!month_dir) {
+                continue;
+            }
+            while ((month_entry = readdir(month_dir)) != NULL && count < 512) {
+                size_t name_len = strlen(month_entry->d_name);
+
+                if (name_len < 4 || strcmp(month_entry->d_name + name_len - 4, ".tsv") != 0) {
+                    continue;
+                }
+                if (join_path(nested_path, sizeof(nested_path), path, month_entry->d_name) != 0) {
+                    continue;
+                }
+                if ((active_event_path && strcmp(nested_path, active_event_path) == 0) ||
+                    (active_status_path && strcmp(nested_path, active_status_path) == 0)) {
+                    continue;
+                }
+                if (stat(nested_path, &st) != 0 || !S_ISREG(st.st_mode)) {
+                    continue;
+                }
+                snprintf(candidates[count].path, sizeof(candidates[count].path), "%s", nested_path);
+                candidates[count].mtime = st.st_mtime;
+                count++;
+            }
+            closedir(month_dir);
         }
-        snprintf(candidates[count].path, sizeof(candidates[count].path), "%s", path);
-        candidates[count].mtime = st.st_mtime;
-        count++;
     }
     closedir(dir);
 

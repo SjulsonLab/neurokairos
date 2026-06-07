@@ -23,6 +23,13 @@ The event TSV files are written under:
 /var/lib/neurokairos/eventlogger/journal
 ```
 
+Within that directory, files are organized into month buckets such as
+`2026-06_journal/`.
+
+The top-level `README.txt` in that directory explains the retention policy:
+oldest inactive journal files are deleted automatically when disk space runs
+low.
+
 Saved recordings are separate, user-facing exports sliced from that journal.
 Those recording TSVs keep only:
 
@@ -35,6 +42,13 @@ They are written under:
 ```text
 /var/lib/neurokairos/eventlogger/recordings
 ```
+
+Within that directory, exported recordings are organized into month buckets
+such as `2026-06_recordings/`.
+
+The top-level `README.txt` in that directory explains the retention policy:
+oldest inactive recording exports are deleted automatically when disk space
+runs low.
 
 The logger also writes a daily chrony status TSV in the same directory. This
 status log records the system clock state once per minute, which helps interpret

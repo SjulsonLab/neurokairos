@@ -282,6 +282,9 @@ Expose a shared folder containing:
 ```text
 recordings/
 journal/
+
+Both directories are month-organized in the installed layout, for example
+`2026-06_recordings/` and `2026-06_journal/`.
 ```
 
 Users should be able to access files directly from acquisition computers via SMB.

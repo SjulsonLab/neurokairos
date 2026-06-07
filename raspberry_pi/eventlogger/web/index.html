@@ -15,10 +15,54 @@
       --line: #2a3643;
       --accent: #2f7cff;
       --accent-pressed: #1f5ed0;
+      --field-bg: #0f151b;
+      --field-disabled-bg: #141b23;
+      --field-disabled-text: #7d8996;
+      --field-disabled-line: #24303c;
+      --record-button-bg: #2492ff;
+      --record-button-hover: #43a3ff;
+      --record-button-pressed: #1f70e2;
+      --record-core-off: #5a1d1d;
+      --stop-border: #5a6a7b;
+      --stop-border-hover: #6b7d91;
+      --button-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.24);
+      --hover-surface: #1c2630;
+      --hover-line: #364353;
+      --ring: rgba(255, 255, 255, 0.06);
       --active: #42ff8c;
       --inactive: #5d6774;
       --error: #ff7d7d;
       --shadow: rgba(0, 0, 0, 0.28);
+    }
+
+    html[data-theme="light"] {
+      color-scheme: light;
+      --bg: #edf1f4;
+      --panel: #f8fafc;
+      --panel-2: #e7edf3;
+      --text: #16202a;
+      --muted: #61707d;
+      --line: #cdd5de;
+      --accent: #226fe0;
+      --accent-pressed: #1b5cc0;
+      --field-bg: #ffffff;
+      --field-disabled-bg: #e9eef3;
+      --field-disabled-text: #7a8590;
+      --field-disabled-line: #d5dde6;
+      --record-button-bg: #2d82ed;
+      --record-button-hover: #4d97f0;
+      --record-button-pressed: #1f6fd9;
+      --record-core-off: #7a3030;
+      --stop-border: #768391;
+      --stop-border-hover: #66707a;
+      --button-shadow: inset 0 2px 6px rgba(31, 49, 68, 0.14);
+      --hover-surface: #dde6ef;
+      --hover-line: #bcc8d5;
+      --ring: rgba(21, 33, 46, 0.08);
+      --active: #0bb35a;
+      --inactive: #98a4af;
+      --error: #c83939;
+      --shadow: rgba(28, 40, 52, 0.12);
     }
 
     * {
@@ -33,7 +77,7 @@
     }
 
     main {
-      max-width: 1040px;
+      max-width: 720px;
       margin: 0 auto;
       padding: 28px 20px 40px;
     }
@@ -81,10 +125,39 @@
       white-space: nowrap;
     }
 
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .theme-toggle {
+      min-width: 108px;
+      padding: 9px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel-2);
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease, transform 0.08s ease;
+    }
+
+    .theme-toggle:hover {
+      background: var(--hover-surface);
+      border-color: var(--hover-line);
+    }
+
+    .theme-toggle:active {
+      transform: translateY(1px);
+    }
+
     .recording-row {
       display: grid;
-      grid-template-columns: minmax(220px, 360px) auto;
-      gap: 12px;
+      grid-template-columns: minmax(360px, 1fr) auto;
+      gap: 24px;
       align-items: end;
     }
 
@@ -114,7 +187,7 @@
       padding: 11px 12px;
       border: 1px solid var(--line);
       border-radius: 6px;
-      background: #0f151b;
+      background: var(--field-bg);
       color: var(--text);
       outline: none;
     }
@@ -126,14 +199,14 @@
     }
 
     input:disabled {
-      background: #141b23;
-      color: #7d8996;
-      border-color: #24303c;
+      background: var(--field-disabled-bg);
+      color: var(--field-disabled-text);
+      border-color: var(--field-disabled-line);
       cursor: not-allowed;
     }
 
     textarea {
-      min-height: 88px;
+      min-height: 176px;
       resize: vertical;
     }
 
@@ -173,20 +246,20 @@
 
     .record-button {
       position: relative;
-      border-color: #2492ff;
-      background: #2492ff;
+      border-color: var(--record-button-bg);
+      background: var(--record-button-bg);
     }
 
     .record-button:hover:enabled {
-      background: #43a3ff;
+      background: var(--record-button-hover);
     }
 
     .record-core {
       width: 23px;
       height: 23px;
       border-radius: 50%;
-      background: #5a1d1d;
-      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+      background: var(--record-core-off);
+      box-shadow: 0 0 0 1px var(--ring);
     }
 
     .stop-icon {
@@ -201,14 +274,14 @@
       background: var(--accent-pressed);
       border-color: var(--accent-pressed);
       transform: translateY(1px);
-      box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.24);
+      box-shadow: var(--button-shadow);
     }
 
     .record-button:active:enabled,
     .record-button.is-active {
-      background: #1f70e2;
-      border-color: #1f70e2;
-      box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.24);
+      background: var(--record-button-pressed);
+      border-color: var(--record-button-pressed);
+      box-shadow: var(--button-shadow);
     }
 
     .control-button[disabled] {
@@ -218,13 +291,13 @@
 
     .stop-button {
       background: transparent;
-      border-color: var(--line);
+      border-color: var(--stop-border);
       color: var(--text);
     }
 
     .stop-button:hover:enabled {
-      background: #1c2630;
-      border-color: #364353;
+      background: var(--hover-surface);
+      border-color: var(--stop-border-hover);
     }
 
     .record-core.active {
@@ -235,20 +308,12 @@
 
     .recording-status-block {
       margin-top: 14px;
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 6px 18px;
-      align-items: start;
+      display: block;
     }
 
     .recording-metrics {
       display: grid;
       gap: 6px;
-    }
-
-    .recording-report {
-      min-width: 180px;
-      text-align: left;
     }
 
     .status-line {
@@ -285,7 +350,7 @@
     .inputs-label {
       color: var(--muted);
       font-size: 14px;
-      padding-top: 6px;
+      padding-top: 27px;
     }
 
     .input-strip {
@@ -298,7 +363,7 @@
     .input-stack {
       width: 54px;
       display: grid;
-      grid-template-rows: 23px 20px;
+      grid-template-rows: 23px 24px;
       justify-items: center;
       row-gap: 5px;
     }
@@ -308,7 +373,7 @@
       height: 23px;
       border-radius: 50%;
       background: var(--inactive);
-      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
+      box-shadow: 0 0 0 1px var(--ring);
     }
 
     .indicator.high {
@@ -320,6 +385,7 @@
       font-size: 15px;
       color: var(--muted);
       line-height: 1;
+      margin-top: 4px;
     }
 
     .pulse-strip {
@@ -390,7 +456,10 @@
           <h1>Event Logger Test UI</h1>
           <p>This page polls input status every 100 ms and exercises the temporary recording API.</p>
         </div>
-        <div class="service-status" id="service-status">Loading status...</div>
+        <div class="header-actions">
+          <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light and dark theme" aria-pressed="false">Light Theme</button>
+          <div class="service-status" id="service-status">Loading status...</div>
+        </div>
       </div>
     </div>
 
@@ -422,15 +491,16 @@
       </div>
       <div class="field" style="margin-top: 12px;">
         <label for="notes">Notes:</label>
-        <textarea id="notes" placeholder="Optional notes"></textarea>
+        <textarea id="notes" placeholder="Notes typed here will be saved in the YAML logfile when Stop is pressed"></textarea>
       </div>
       <div class="recording-status-block">
         <div class="recording-metrics">
           <div class="status-line" id="recording-state-line"><strong>Status:</strong> idle</div>
           <div class="status-line" id="filename-line"><strong>Filename:</strong> not recording</div>
           <div class="status-line" id="duration-line"><strong>Duration:</strong> 00:00:00</div>
+          <div class="status-line" id="recording-report-line"><strong>Recorder:</strong> Recorder idle</div>
+          <div class="status-line" id="timezone-line"><strong>Timezone:</strong> unknown</div>
         </div>
-        <div class="status-line recording-report" id="recording-report-line"><strong>Recorder:</strong> Recorder idle</div>
       </div>
       <div class="error" id="error-status"></div>
     </div>
@@ -447,10 +517,13 @@
   </main>
 
   <script>
+    const THEME_STORAGE_KEY = "eventlogger-theme";
     let lastRisingCounts = new Map();
     let pulseWindowStreaks = new Map();
     let latestStatus = null;
     let lastStatusMessage = "<strong>Status:</strong> idle";
+    let lastRecordingFilename = null;
+    let statusMessageMode = "live";
     let stopInFlight = false;
     const POLL_INTERVAL_MS = 100;
     const UI_REFRESH_MS = 250;
@@ -479,6 +552,47 @@
         return isoText;
       }
       return date.toLocaleString();
+    }
+
+    function formatStatusDateTime(isoText) {
+      if (!isoText) {
+        return "unknown time";
+      }
+      const date = new Date(isoText);
+      if (Number.isNaN(date.getTime())) {
+        return isoText;
+      }
+      const datePart = date.toLocaleDateString([], {
+        year: "numeric",
+        month: "numeric",
+        day: "numeric"
+      });
+      const timePart = date.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+      return `${datePart} at ${timePart} local time`;
+    }
+
+    function applyTheme(theme) {
+      const resolvedTheme = theme === "light" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", resolvedTheme);
+      const toggle = document.getElementById("theme-toggle");
+      toggle.textContent = resolvedTheme === "dark" ? "Light Theme" : "Dark Theme";
+      toggle.setAttribute("aria-pressed", resolvedTheme === "light" ? "true" : "false");
+    }
+
+    function initializeTheme() {
+      const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+      applyTheme(savedTheme === "light" ? "light" : "dark");
+    }
+
+    function toggleTheme() {
+      const currentTheme = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+      const nextTheme = currentTheme === "light" ? "dark" : "light";
+      window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+      applyTheme(nextTheme);
     }
 
     function renderInputs(status) {
@@ -550,20 +664,35 @@
       }
       recordLight.classList.toggle("active", active);
       const timezoneText = status.active_recording.timezone ?? "unknown";
+      const timezoneLine = document.getElementById("timezone-line");
       recordingReport.innerHTML = stopInFlight
-        ? `<strong>Recorder:</strong> Stopping and saving recording...<br><strong>Timezone:</strong> ${timezoneText}`
+        ? "<strong>Recorder:</strong> Stopping and saving recording..."
         : active
-        ? `<strong>Recorder:</strong> Recording in progress<br><strong>Timezone:</strong> ${timezoneText}`
-        : `<strong>Recorder:</strong> Recorder idle<br><strong>Timezone:</strong> ${timezoneText}`;
+        ? "<strong>Recorder:</strong> Recording in progress"
+        : "<strong>Recorder:</strong> Recorder idle";
+      timezoneLine.innerHTML = `<strong>Timezone:</strong> ${timezoneText}`;
 
       const startLocal = status.active_recording.start_local;
+      const stopUtc = status.active_recording.stop_utc;
       const activeUser = status.active_recording.user ?? "anonymous";
       if (active) {
-        lastStatusMessage = `<strong>Status:</strong> Recording ${status.active_recording.basename} by ${activeUser} started at ${startLocal}`;
+        if (status.active_recording.filename) {
+          lastRecordingFilename = status.active_recording.filename;
+        }
+        statusMessageMode = "live";
+        lastStatusMessage = `<strong>Status:</strong> Recording ${status.active_recording.basename} by ${activeUser} started at ${formatStatusDateTime(startLocal)}`;
+      } else if (stopUtc) {
+        statusMessageMode = "saved";
+        lastStatusMessage = `<strong>Status:</strong> Recording saved at ${formatStatusDateTime(stopUtc)}`;
+      } else if (statusMessageMode === "saved") {
+        lastStatusMessage = lastStatusMessage;
       }
       document.getElementById("recording-state-line").innerHTML = lastStatusMessage;
-      document.getElementById("filename-line").innerHTML = active && status.active_recording.filename
-        ? `<strong>Filename:</strong> ${status.active_recording.filename}`
+      const displayFilename = active
+        ? (status.active_recording.filename ?? lastRecordingFilename)
+        : lastRecordingFilename;
+      document.getElementById("filename-line").innerHTML = displayFilename
+        ? `<strong>Filename:</strong> ${displayFilename}`
         : "<strong>Filename:</strong> not recording";
       renderDuration(status);
 
@@ -598,7 +727,12 @@
         document.getElementById("error-status").textContent = payload.error;
         return;
       }
-      lastStatusMessage = `<strong>Status:</strong> Recording ${payload.recording.basename} by ${payload.recording.user} started at ${payload.recording.start_local}`;
+      if (payload.recording.filename) {
+        lastRecordingFilename = payload.recording.filename;
+      }
+      statusMessageMode = "live";
+      lastStatusMessage = `<strong>Status:</strong> Recording ${payload.recording.basename} by ${payload.recording.user} started at ${formatStatusDateTime(payload.recording.start_local)}`;
+      document.getElementById("recording-state-line").innerHTML = lastStatusMessage;
       await pollStatus();
     }
 
@@ -623,13 +757,20 @@
         }
         return;
       }
-      lastStatusMessage = `<strong>Status:</strong> Recording ${payload.recording.basename} by ${payload.recording.user} stopped at ${formatLocalTimestamp(payload.recording.stop_utc)}`;
+      if (payload.recording.filename) {
+        lastRecordingFilename = payload.recording.filename;
+      }
+      statusMessageMode = "saved";
+      lastStatusMessage = `<strong>Status:</strong> Recording saved at ${formatStatusDateTime(payload.recording.stop_utc)}`;
+      document.getElementById("recording-state-line").innerHTML = lastStatusMessage;
       await pollStatus();
     }
 
     document.getElementById("start-button").addEventListener("click", startRecording);
     document.getElementById("stop-button").addEventListener("click", stopRecording);
+    document.getElementById("theme-toggle").addEventListener("click", toggleTheme);
 
+    initializeTheme();
     pollStatus().catch((error) => {
       document.getElementById("error-status").textContent = String(error);
     });

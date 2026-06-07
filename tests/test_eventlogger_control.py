@@ -38,9 +38,14 @@ def make_request(url: str, method: str = "GET", payload: dict | None = None) -> 
 
 def make_journal(root_dir: Path, name: str, rows: list[str]) -> None:
     journal_dir = root_dir / "journal"
-    journal_dir.mkdir(parents=True, exist_ok=True)
+    month_dir = journal_dir
+    if "_" in name and name.endswith(".tsv"):
+        date_part = name.rsplit("_", 1)[-1].removesuffix(".tsv")
+        if len(date_part) >= 7:
+            month_dir = journal_dir / f"{date_part[:7]}_journal"
+    month_dir.mkdir(parents=True, exist_ok=True)
     header = "utc_time\trealtime_ns\tmonotonic_ns\tinput\tedge\n"
-    (journal_dir / name).write_text(header + "".join(rows))
+    (month_dir / name).write_text(header + "".join(rows))
 
 
 def make_input_state(root_dir: Path) -> None:
@@ -142,6 +147,7 @@ def test_export_recording_slices_journal_and_writes_minimal_yaml(tmp_path: Path)
     exported_yaml = Path(result["yaml_path"])
     assert exported_tsv.exists()
     assert exported_yaml.exists()
+    assert exported_tsv.parent.name == "2026-06_recordings"
     assert exported_tsv.name == "events_2026-06-06_105707.tsv"
     exported_lines = exported_tsv.read_text().splitlines()
     assert exported_lines[0] == "UTC_time\tinput\tedge"
@@ -182,6 +188,7 @@ def test_export_recording_writes_multiline_notes_safely(tmp_path: Path):
 
     result = module.export_recording(root_dir, recording, hostname="testpi")
     yaml_text = Path(result["yaml_path"]).read_text()
+    assert Path(result["yaml_path"]).parent.name == "2026-06_recordings"
 
     assert "notes: |-" in yaml_text
     assert "  line one" in yaml_text
@@ -191,7 +198,7 @@ def test_export_recording_writes_multiline_notes_safely(tmp_path: Path):
 def test_export_collision_only_shifts_filename(tmp_path: Path):
     module = load_module()
     root_dir = tmp_path / "eventlogger"
-    recordings_dir = root_dir / "recordings"
+    recordings_dir = root_dir / "recordings" / "2026-06_recordings"
     recordings_dir.mkdir(parents=True, exist_ok=True)
     (recordings_dir / "events_2026-06-06_105707.tsv").write_text("existing\n")
     (recordings_dir / "events_2026-06-06_105707.yaml").write_text("existing\n")
@@ -213,6 +220,7 @@ def test_export_collision_only_shifts_filename(tmp_path: Path):
 
     result = module.export_recording(root_dir, recording, hostname="testpi")
     assert Path(result["tsv_path"]).name == "events_2026-06-06_105708.tsv"
+    assert Path(result["tsv_path"]).parent.name == "2026-06_recordings"
     assert result["recording"]["start_local"] == "2026-06-06T10:57:07"
 
 
@@ -239,6 +247,7 @@ def test_export_tsv_drops_raw_nanosecond_columns(tmp_path: Path):
 
     result = module.export_recording(root_dir, recording, hostname="testpi")
     exported_text = Path(result["tsv_path"]).read_text()
+    assert Path(result["tsv_path"]).parent.name == "2026-06_recordings"
 
     assert "realtime_ns" not in exported_text
     assert "monotonic_ns" not in exported_text
@@ -271,6 +280,7 @@ def test_recover_interrupted_recording_creates_interrupted_export(tmp_path: Path
     assert result is not None
     assert result["recording"]["interrupted"] is True
     assert not active_path.exists()
+    assert Path(result["tsv_path"]).parent.name == "2026-06_recordings"
 
 
 def test_status_payload_reads_input_state_and_active_recording(tmp_path: Path):
@@ -392,7 +402,7 @@ def test_start_recording_reserves_export_filename_immediately(tmp_path: Path):
     module = load_module()
     root_dir = tmp_path / "eventlogger"
     make_input_state(root_dir)
-    recordings_dir = root_dir / "recordings"
+    recordings_dir = root_dir / "recordings" / "2026-06_recordings"
     recordings_dir.mkdir(parents=True, exist_ok=True)
     (recordings_dir / "events_2026-06-06_145707.tsv").write_text("existing\n")
     (recordings_dir / "events_2026-06-06_145707.yaml").write_text("existing\n")
@@ -413,6 +423,7 @@ def test_start_recording_reserves_export_filename_immediately(tmp_path: Path):
     assert recording["notes"] == ""
     assert recording["input_rising_baselines"]["DIN1"] == 2
     assert status["active_recording"]["filename"] == "events_2026-06-06_145708.tsv"
+    assert recording["export_stem"].startswith("events_2026-06-06_")
 
 
 def test_stop_recording_uses_final_notes_value(tmp_path: Path):

@@ -11,10 +11,13 @@ def read_text(relative_path: str) -> str:
 def test_eventlogger_smb_share_template_is_guest_readonly():
     share = read_text("raspberry_pi/eventlogger/eventlogger.smb.conf.example")
 
-    assert "[neurokairos-eventlogger]" in share
-    assert "path = /var/lib/neurokairos/eventlogger" in share
+    assert "[neurokairos-eventlogger-recordings]" in share
+    assert "[neurokairos-eventlogger-journal]" in share
+    assert "path = /var/lib/neurokairos/eventlogger/recordings" in share
+    assert "path = /var/lib/neurokairos/eventlogger/journal" in share
     assert "browseable = yes" in share
     assert "guest ok = yes" in share
+    assert "read only = no" in share
     assert "read only = yes" in share
 
 
