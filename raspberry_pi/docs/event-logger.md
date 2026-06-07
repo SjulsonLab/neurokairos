@@ -1,32 +1,31 @@
-# Raspberry Pi Event Logger
+# Neurokairos Event Logger
 
-The Raspberry Pi event logger continuously records digital input transitions on
-configured GPIO pins and assigns each transition a UTC timestamp. It is meant
-for cases where cameras, behavioral hardware, or other devices emit TTL pulses
-that need to be aligned to the NeuroKairos time base.
+Some data acquisition systems cannot record TTLs but rather emit TTLs when an event occurs, e.g. a behavioral event or the acquisition of a camera frame. To align these events to UTC time, the Neurokairos event logger records them in a logfile with UTC timestamps indicating the time of their occurrence.
 
-The important design choice is that capture is always on. The system does not
-depend on a user pressing "record" before data exists.
+To use the event logger, connect your device's outputs to digital inputs 1-8 on the Raspberry Pi (pinout information below). Then access the web interface by typing http://neurokairos.local into a browser (replacing neurokairos with whatever you renamed it to). The event logger interface is fairly straightforward. Enter a basename and any notes you want saved with the
+recording, then start and stop the recording from that page. 
 
-To use the event logger, leave the logger service running and connect your TTL
-source to one of the configured inputs. From a PC on the same network, open the
-event logger web UI, enter a basename and any notes you want saved with the
-recording, then start and stop the recording from that page. The logger will
-continuously collect edges in the background whether or not you start a
-recording in the UI. When you do use the UI to start and stop a recording, the
-system saves a user-facing export for that time window rather than starting a
-separate acquisition.
+A recording includes a `.tsv` file (Tab-Separated Values) containing UTC timestamps, input names, and edge directions, along with a matching `.yaml` file that stores details such as the basename, times, user information, and notes. You can access the exported recordings from a PC over the Raspberry Pi's SMB share in the `recordings/` folder.
 
-The files you end up with are simple tab-separated value files plus a metadata
-sidecar. A recording export looks like a `.tsv` file containing UTC timestamps,
-input names, and edge directions, along with a matching `.yaml` file that
-stores details such as the basename, times, user information, and notes. You
-can access the exported recordings from a PC over the Raspberry Pi's SMB share,
-where the event logger data is exposed read-only. Within that share, raw
-continuous logs are in `journal/` and exported recordings are in `recordings/`.
+An important thing to note is that the logger is always on, meaning that TTL events are logged continuously. The "record" and "stop" functionality merely export a portion of that continuous log in a convenient package. If you forget to hit record, you can retrieve the event information from the raw continuous logs stored in `journal/`.
 
 For more details about how the event logger is structured internally, see the
 detailed breakdown below.
+
+## GPIO Pin Configuration
+
+The default config enables eight inputs:
+
+- `DIN1` -> BCM 5
+- `DIN2` -> BCM 6
+- `DIN3` -> BCM 10
+- `DIN4` -> BCM 11
+- `DIN5` -> BCM 12
+- `DIN6` -> BCM 13
+- `DIN7` -> BCM 16
+- `DIN8` -> BCM 17
+
+Those are Broadcom (BCM) pin numbers, not physical pin numbers. The default deadtime is `1 ms`, meaning that multiple events within a 1 ms window are treated as a single event. This is used to "debounce" transients that can occur when a pin changes state. Also, note that the Raspberry Pi's GPIO pins expect 3.3 V inputs; you will need to use a logic level shifter for 5 V TTL inputs (in almost all cases, a simple voltage divider will suffice). 
 
 ## Main Components
 
@@ -251,23 +250,6 @@ Important details:
 - active daily files are preserved
 - cleanup applies to journal/status TSVs, not exported recordings
 - deletions are recorded in `cleanup_audit.tsv`
-
-## Default Configuration
-
-The example config enables eight inputs by default:
-
-- `DIN1` -> BCM 5
-- `DIN2` -> BCM 6
-- `DIN3` -> BCM 10
-- `DIN4` -> BCM 11
-- `DIN5` -> BCM 12
-- `DIN6` -> BCM 13
-- `DIN7` -> BCM 16
-- `DIN8` -> BCM 17
-
-The default deadtime is `1 ms` per input. That means back-to-back edges on the
-same input that arrive within 1 ms are ignored unless the value is changed to
-`0` or another configured number.
 
 ## Operational Summary
 
