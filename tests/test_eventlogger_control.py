@@ -83,6 +83,22 @@ def test_control_module_exists_and_normalizes_empty_basename():
     assert module.normalize_basename("mouse-123_a") == "mouse-123_a"
 
 
+def test_normalize_notes_defaults_to_empty_string():
+    module = load_module()
+
+    assert module.normalize_notes(None) == ""
+    assert module.normalize_notes("   ") == ""
+    assert module.normalize_notes("  test note  ") == "test note"
+
+
+def test_normalize_user_defaults_to_anonymous():
+    module = load_module()
+
+    assert module.normalize_user(None) == "anonymous"
+    assert module.normalize_user("   ") == "anonymous"
+    assert module.normalize_user("  ava  ") == "ava"
+
+
 def test_invalid_basenames_are_rejected():
     module = load_module()
 
@@ -110,11 +126,13 @@ def test_export_recording_slices_journal_and_writes_minimal_yaml(tmp_path: Path)
 
     recording = {
         "basename": "events",
+        "user": "ava",
         "start_utc": "2026-06-06T14:57:07.000000000Z",
         "stop_utc": "2026-06-06T14:57:08.000003466Z",
         "start_local": "2026-06-06T10:57:07",
         "timezone": "America/New_York",
         "exported_inputs": ["DIN1", "DIN2"],
+        "notes": "mouse 7, baseline session",
         "interrupted": False,
     }
 
@@ -133,9 +151,41 @@ def test_export_recording_slices_journal_and_writes_minimal_yaml(tmp_path: Path)
         "2026-06-06T14:57:08.000003466Z\tDIN2\trising",
     ]
     yaml_text = exported_yaml.read_text()
-    assert "basename: events" in yaml_text
-    assert "hostname: testpi" in yaml_text
+    assert 'basename: "events"' in yaml_text
+    assert 'user: "ava"' in yaml_text
+    assert 'hostname: "testpi"' in yaml_text
+    assert "notes: |-" in yaml_text
+    assert "  mouse 7, baseline session" in yaml_text
     assert "interrupted: false" in yaml_text
+
+
+def test_export_recording_writes_multiline_notes_safely(tmp_path: Path):
+    module = load_module()
+    root_dir = tmp_path / "eventlogger"
+    make_journal(
+        root_dir,
+        "events_2026-06-06.tsv",
+        ["2026-06-06T14:57:07.000004223Z\t2\t2\tDIN1\trising\n"],
+    )
+
+    recording = {
+        "basename": "events",
+        "user": "anonymous",
+        "start_utc": "2026-06-06T14:57:07.000000000Z",
+        "stop_utc": "2026-06-06T14:57:07.000004223Z",
+        "start_local": "2026-06-06T10:57:07",
+        "timezone": "America/New_York",
+        "exported_inputs": ["DIN1"],
+        "notes": "line one\nprotocol: A",
+        "interrupted": False,
+    }
+
+    result = module.export_recording(root_dir, recording, hostname="testpi")
+    yaml_text = Path(result["yaml_path"]).read_text()
+
+    assert "notes: |-" in yaml_text
+    assert "  line one" in yaml_text
+    assert "  protocol: A" in yaml_text
 
 
 def test_export_collision_only_shifts_filename(tmp_path: Path):
@@ -230,6 +280,8 @@ def test_status_payload_reads_input_state_and_active_recording(tmp_path: Path):
     control_dir = root_dir / "control"
     active = {
         "basename": "events",
+        "notes": "session note",
+        "user": "ava",
         "export_stem": "events_2026-06-06_105707",
         "input_rising_baselines": {"DIN1": 1, "DIN2": 0},
         "start_utc": "2026-06-06T14:57:07.000000000Z",
@@ -243,6 +295,9 @@ def test_status_payload_reads_input_state_and_active_recording(tmp_path: Path):
 
     assert status["active_recording"]["active"] is True
     assert status["active_recording"]["basename"] == "events"
+    assert status["active_recording"]["user"] == "ava"
+    assert status["active_recording"]["notes"] == "session note"
+    assert status["active_recording"]["timezone"] == "America/New_York"
     assert status["active_recording"]["filename"] == "events_2026-06-06_105707.tsv"
     assert status["active_recording"]["input_rising_baselines"]["DIN1"] == 1
     assert status["inputs"][0]["rising_count"] == 2
@@ -284,16 +339,28 @@ def test_http_server_serves_page_and_recording_workflow(tmp_path: Path):
     try:
         page = make_request(base_url + "/")
         assert "Event Logger Test UI" in page
-        assert "250 ms" in page
+        assert "100 ms" in page
 
         status = make_request(base_url + "/v1/status")
         assert status["active_recording"]["active"] is False
 
-        started = make_request(base_url + "/v1/recordings/start", method="POST", payload={"basename": "   "})
+        started = make_request(
+            base_url + "/v1/recordings/start",
+            method="POST",
+            payload={"basename": "   ", "user": "ava", "notes": "test note"},
+        )
         assert started["recording"]["basename"] == "events"
+        assert started["recording"]["user"] == "ava"
+        assert started["recording"]["notes"] == "test note"
 
-        stopped = make_request(base_url + "/v1/recordings/stop", method="POST")
+        stopped = make_request(
+            base_url + "/v1/recordings/stop",
+            method="POST",
+            payload={"user": "bea", "notes": "final note"},
+        )
         assert stopped["recording"]["basename"] == "events"
+        assert stopped["recording"]["user"] == "bea"
+        assert stopped["recording"]["notes"] == "final note"
         assert Path(stopped["tsv_path"]).exists()
     finally:
         httpd.shutdown()
@@ -342,8 +409,44 @@ def test_start_recording_reserves_export_filename_immediately(tmp_path: Path):
     status = app.build_status()
 
     assert recording["export_stem"] == "events_2026-06-06_145708"
+    assert recording["user"] == "anonymous"
+    assert recording["notes"] == ""
     assert recording["input_rising_baselines"]["DIN1"] == 2
     assert status["active_recording"]["filename"] == "events_2026-06-06_145708.tsv"
+
+
+def test_stop_recording_uses_final_notes_value(tmp_path: Path):
+    module = load_module()
+    root_dir = tmp_path / "eventlogger"
+    make_journal(
+        root_dir,
+        "events_2026-06-06.tsv",
+        ["2026-06-06T14:57:07.000004223Z\t2\t2\tDIN1\trising\n"],
+    )
+    make_input_state(root_dir)
+
+    app = module.EventLoggerControlApp(
+        root_dir=root_dir,
+        hostname="testpi",
+        now_utc=iter(
+            [
+                datetime(2026, 6, 6, 14, 57, 7, tzinfo=timezone.utc),
+                datetime(2026, 6, 6, 14, 57, 8, tzinfo=timezone.utc),
+            ]
+        ).__next__,
+        local_timezone_name="America/New_York",
+        local_timezone=timezone.utc,
+    )
+
+    app.start_recording("events", "initial user", "initial note")
+    result = app.stop_recording("final user", "final note")
+
+    assert result["recording"]["user"] == "final user"
+    assert result["recording"]["notes"] == "final note"
+    yaml_text = Path(result["yaml_path"]).read_text()
+    assert 'user: "final user"' in yaml_text
+    assert "  final note" in yaml_text
+    assert "initial note" not in yaml_text
 
 
 def test_file_contracts_for_control_service_and_ui():
@@ -358,6 +461,10 @@ def test_file_contracts_for_control_service_and_ui():
     assert "Digital inputs:" in ui
     assert "Pulses recorded" in ui
     assert "Filename:" in ui
+    assert 'label for="user"' in ui
+    assert 'label for="notes"' in ui
     assert "record-light" in ui
+    assert ">Record<" in ui
+    assert ">Stop<" in ui
     assert "control-button record-button" in ui
     assert "control-button stop-button" in ui

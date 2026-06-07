@@ -91,7 +91,7 @@
     .recording-controls {
       display: inline-flex;
       gap: 10px;
-      align-items: center;
+      align-items: flex-start;
     }
 
     .field {
@@ -106,7 +106,8 @@
       font-size: 14px;
     }
 
-    input {
+    input,
+    textarea {
       width: 100%;
       min-width: 0;
       font: inherit;
@@ -118,14 +119,32 @@
       outline: none;
     }
 
-    input:focus {
+    input:focus,
+    textarea:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 1px var(--accent);
     }
 
+    textarea {
+      min-height: 88px;
+      resize: vertical;
+    }
+
+    .control-cluster {
+      display: grid;
+      justify-items: center;
+      gap: 6px;
+    }
+
+    .control-label {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1;
+    }
+
     .control-button {
-      width: 46px;
-      height: 46px;
+      width: 54px;
+      height: 54px;
       padding: 0;
       border: 1px solid var(--accent);
       border-radius: 8px;
@@ -139,18 +158,28 @@
       justify-content: center;
     }
 
-    .record-icon,
+    .record-core,
     .stop-icon {
       display: inline-block;
       flex: 0 0 auto;
     }
 
-    .record-icon {
-      width: 14px;
-      height: 14px;
+    .record-button {
+      position: relative;
+      border-color: #2492ff;
+      background: #2492ff;
+    }
+
+    .record-button:hover:enabled {
+      background: #43a3ff;
+    }
+
+    .record-core {
+      width: 12px;
+      height: 12px;
       border-radius: 50%;
-      background: #ff4f4f;
-      box-shadow: 0 0 12px rgba(255, 79, 79, 0.28);
+      background: #5a1d1d;
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
     }
 
     .stop-icon {
@@ -160,15 +189,18 @@
       background: currentColor;
     }
 
-    .control-button:hover:enabled {
-      background: #418bff;
-    }
-
     .control-button:active:enabled,
     .control-button.is-active {
       background: var(--accent-pressed);
       border-color: var(--accent-pressed);
       transform: translateY(1px);
+      box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.24);
+    }
+
+    .record-button:active:enabled,
+    .record-button.is-active {
+      background: #1f70e2;
+      border-color: #1f70e2;
       box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.24);
     }
 
@@ -188,32 +220,28 @@
       border-color: #364353;
     }
 
+    .record-core.active {
+      background: #ff4f4f;
+      box-shadow: 0 0 12px rgba(255, 79, 79, 0.6);
+      animation: blink 1s steps(1, end) infinite;
+    }
+
     .recording-status-block {
       margin-top: 14px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px 18px;
+      align-items: start;
+    }
+
+    .recording-metrics {
       display: grid;
       gap: 6px;
     }
 
-    .record-light-row {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 14px;
-      color: var(--muted);
-    }
-
-    .record-light {
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background: #432222;
-      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
-    }
-
-    .record-light.active {
-      background: #ff4f4f;
-      box-shadow: 0 0 12px rgba(255, 79, 79, 0.6);
-      animation: blink 1s steps(1, end) infinite;
+    .recording-report {
+      min-width: 180px;
+      text-align: left;
     }
 
     .status-line {
@@ -328,6 +356,14 @@
         grid-template-columns: 1fr;
       }
 
+      .recording-status-block {
+        grid-template-columns: 1fr;
+      }
+
+      .recording-report {
+        min-width: 0;
+      }
+
       .inputs-layout {
         grid-template-columns: 1fr;
       }
@@ -345,7 +381,7 @@
       <div class="intro">
         <div>
           <h1>Event Logger Test UI</h1>
-          <p>This page polls input status every 250 ms and exercises the temporary recording API.</p>
+          <p>This page polls input status every 100 ms and exercises the temporary recording API.</p>
         </div>
         <div class="service-status" id="service-status">Loading status...</div>
       </div>
@@ -359,22 +395,35 @@
           <input id="basename" type="text" placeholder="events">
         </div>
         <div class="recording-controls">
-          <button id="start-button" class="control-button record-button" type="button" title="Record" aria-label="Record">
-            <span class="record-icon" aria-hidden="true"></span>
-          </button>
-          <button id="stop-button" class="control-button stop-button" type="button" title="Stop" aria-label="Stop">
-            <span class="stop-icon" aria-hidden="true"></span>
-          </button>
+          <div class="control-cluster">
+            <button id="start-button" class="control-button record-button" type="button" title="Record" aria-label="Record">
+              <span class="record-core" id="record-light" aria-hidden="true"></span>
+            </button>
+            <div class="control-label">Record</div>
+          </div>
+          <div class="control-cluster">
+            <button id="stop-button" class="control-button stop-button" type="button" title="Stop" aria-label="Stop">
+              <span class="stop-icon" aria-hidden="true"></span>
+            </button>
+            <div class="control-label">Stop</div>
+          </div>
         </div>
       </div>
+      <div class="field" style="margin-top: 12px;">
+        <label for="user">User:</label>
+        <input id="user" type="text" placeholder="anonymous">
+      </div>
+      <div class="field" style="margin-top: 12px;">
+        <label for="notes">Notes:</label>
+        <textarea id="notes" placeholder="Optional notes"></textarea>
+      </div>
       <div class="recording-status-block">
-        <div class="record-light-row">
-          <span class="record-light" id="record-light"></span>
-          <span id="record-light-label">Recorder idle</span>
+        <div class="recording-metrics">
+          <div class="status-line" id="recording-state-line"><strong>Status:</strong> idle</div>
+          <div class="status-line" id="filename-line"><strong>Filename:</strong> not recording</div>
+          <div class="status-line" id="duration-line"><strong>Duration:</strong> 00:00:00</div>
         </div>
-        <div class="status-line" id="recording-state-line"><strong>Status:</strong> idle</div>
-        <div class="status-line" id="filename-line"><strong>Filename:</strong> not recording</div>
-        <div class="status-line" id="duration-line"><strong>Duration:</strong> 00:00:00</div>
+        <div class="status-line recording-report" id="recording-report-line"><strong>Recorder:</strong> Recorder idle</div>
       </div>
       <div class="error" id="error-status"></div>
     </div>
@@ -393,6 +442,9 @@
   <script>
     let lastRisingCounts = new Map();
     let latestStatus = null;
+    let lastStatusMessage = "<strong>Status:</strong> idle";
+    let stopInFlight = false;
+    const POLL_INTERVAL_MS = 100;
 
     function formatDuration(startUtc) {
       if (!startUtc) {
@@ -407,6 +459,17 @@
       const minutes = String(Math.floor((elapsedSeconds % 3600) / 60)).padStart(2, "0");
       const seconds = String(elapsedSeconds % 60).padStart(2, "0");
       return `${hours}:${minutes}:${seconds}`;
+    }
+
+    function formatLocalTimestamp(isoText) {
+      if (!isoText) {
+        return "unknown time";
+      }
+      const date = new Date(isoText);
+      if (Number.isNaN(date.getTime())) {
+        return isoText;
+      }
+      return date.toLocaleString();
     }
 
     function renderInputs(status) {
@@ -442,27 +505,42 @@
     }
 
     function renderStatus(status) {
+      const wasActive = latestStatus?.active_recording?.active === true;
       latestStatus = status;
       const active = status.active_recording.active;
       const startButton = document.getElementById("start-button");
       const stopButton = document.getElementById("stop-button");
       const basenameInput = document.getElementById("basename");
+      const userInput = document.getElementById("user");
+      const notesInput = document.getElementById("notes");
       const recordLight = document.getElementById("record-light");
-      const recordLightLabel = document.getElementById("record-light-label");
+      const recordingReport = document.getElementById("recording-report-line");
 
       document.getElementById("service-status").textContent =
         `capture service: ${status.capture_service_running ? "running" : "not running"} | control service: running`;
 
       startButton.classList.toggle("is-active", active);
       startButton.disabled = active;
-      stopButton.disabled = !active;
+      stopButton.disabled = !active || stopInFlight;
       basenameInput.disabled = active;
+      if (active && !wasActive) {
+        userInput.value = status.active_recording.user === "anonymous" ? "" : (status.active_recording.user ?? "");
+        notesInput.value = status.active_recording.notes ?? "";
+      }
       recordLight.classList.toggle("active", active);
-      recordLightLabel.textContent = active ? "Recording in progress" : "Recorder idle";
+      const timezoneText = status.active_recording.timezone ?? "unknown";
+      recordingReport.innerHTML = stopInFlight
+        ? `<strong>Recorder:</strong> Stopping and saving recording...<br><strong>Timezone:</strong> ${timezoneText}`
+        : active
+        ? `<strong>Recorder:</strong> Recording in progress<br><strong>Timezone:</strong> ${timezoneText}`
+        : `<strong>Recorder:</strong> Recorder idle<br><strong>Timezone:</strong> ${timezoneText}`;
 
-      document.getElementById("recording-state-line").innerHTML = active
-        ? "<strong>Status:</strong> recording"
-        : "<strong>Status:</strong> idle";
+      const startLocal = status.active_recording.start_local;
+      const activeUser = status.active_recording.user ?? "anonymous";
+      if (active) {
+        lastStatusMessage = `<strong>Status:</strong> Recording ${status.active_recording.basename} by ${activeUser} started at ${startLocal}`;
+      }
+      document.getElementById("recording-state-line").innerHTML = lastStatusMessage;
       document.getElementById("filename-line").innerHTML = active && status.active_recording.filename
         ? `<strong>Filename:</strong> ${status.active_recording.filename}`
         : "<strong>Filename:</strong> not recording";
@@ -480,27 +558,44 @@
     async function startRecording() {
       document.getElementById("error-status").textContent = "";
       const basename = document.getElementById("basename").value;
+      const user = document.getElementById("user").value;
+      const notes = document.getElementById("notes").value;
       const response = await fetch("/v1/recordings/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ basename })
+        body: JSON.stringify({ basename, user, notes })
       });
       const payload = await response.json();
       if (!response.ok) {
         document.getElementById("error-status").textContent = payload.error;
         return;
       }
+      lastStatusMessage = `<strong>Status:</strong> Recording ${payload.recording.basename} by ${payload.recording.user} started at ${payload.recording.start_local}`;
       await pollStatus();
     }
 
     async function stopRecording() {
       document.getElementById("error-status").textContent = "";
-      const response = await fetch("/v1/recordings/stop", { method: "POST" });
+      const user = document.getElementById("user").value;
+      const notes = document.getElementById("notes").value;
+      stopInFlight = true;
+      document.getElementById("recording-report-line").innerHTML = "<strong>Recorder:</strong> Stopping and saving recording...";
+      document.getElementById("stop-button").disabled = true;
+      const response = await fetch("/v1/recordings/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user, notes })
+      });
       const payload = await response.json();
+      stopInFlight = false;
       if (!response.ok) {
         document.getElementById("error-status").textContent = payload.error;
+        if (latestStatus) {
+          renderStatus(latestStatus);
+        }
         return;
       }
+      lastStatusMessage = `<strong>Status:</strong> Recording ${payload.recording.basename} by ${payload.recording.user} stopped at ${formatLocalTimestamp(payload.recording.stop_utc)}`;
       await pollStatus();
     }
 
@@ -515,13 +610,13 @@
       if (latestStatus) {
         renderStatus(latestStatus);
       }
-    }, 250);
+    }, POLL_INTERVAL_MS);
 
     setInterval(() => {
       pollStatus().catch((error) => {
         document.getElementById("error-status").textContent = String(error);
       });
-    }, 250);
+    }, POLL_INTERVAL_MS);
   </script>
 </body>
 </html>

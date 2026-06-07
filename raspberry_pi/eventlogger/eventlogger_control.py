@@ -56,6 +56,23 @@ def validate_basename(value: str) -> str:
     return value
 
 
+def normalize_notes(value: str | None) -> str:
+    """Normalize optional user notes for storage and export."""
+
+    if value is None:
+        return ""
+    return value.strip()
+
+
+def normalize_user(value: str | None) -> str:
+    """Normalize optional user name, defaulting empty values to 'anonymous'."""
+
+    if value is None:
+        return "anonymous"
+    trimmed = value.strip()
+    return trimmed or "anonymous"
+
+
 def utc_ns_from_datetime(value: datetime) -> int:
     """Convert an aware UTC datetime to integer nanoseconds since Unix epoch."""
 
@@ -88,6 +105,28 @@ def parse_utc_iso_to_ns(text: str) -> int:
 
 def yaml_bool(value: bool) -> str:
     return "true" if value else "false"
+
+
+def yaml_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=True)
+
+
+def yaml_block_string(value: str) -> list[str]:
+    if not value:
+        return ['notes: ""']
+    lines = ["notes: |-"]
+    for line in value.splitlines():
+        lines.append(f"  {line}")
+    return lines
+
+
+def yaml_named_block_string(name: str, value: str) -> list[str]:
+    if not value:
+        return [f'{name}: ""']
+    lines = [f"{name}: |-"]
+    for line in value.splitlines():
+        lines.append(f"  {line}")
+    return lines
 
 
 def parse_bool_jsonish(value):
@@ -200,16 +239,18 @@ def simplify_event_row(raw_row: str) -> str | None:
 
 def write_metadata_yaml(path: Path, recording: dict, hostname: str) -> None:
     lines = [
-        f"basename: {recording['basename']}",
-        f"hostname: {hostname}",
-        f"start_utc: {recording['start_utc']}",
-        f"stop_utc: {recording['stop_utc']}",
-        f"start_local: {recording['start_local']}",
-        f"timezone: {recording['timezone']}",
+        f"basename: {yaml_string(recording['basename'])}",
+        f"user: {yaml_string(normalize_user(recording.get('user')))}",
+        f"hostname: {yaml_string(hostname)}",
+        f"start_utc: {yaml_string(recording['start_utc'])}",
+        f"stop_utc: {yaml_string(recording['stop_utc'])}",
+        f"start_local: {yaml_string(recording['start_local'])}",
+        f"timezone: {yaml_string(recording['timezone'])}",
         "inputs:",
     ]
     for name in recording.get("exported_inputs", []):
-        lines.append(f"  - {name}")
+        lines.append(f"  - {yaml_string(name)}")
+    lines.extend(yaml_named_block_string("notes", recording.get("notes", "")))
     lines.append(f"interrupted: {yaml_bool(parse_bool_jsonish(recording['interrupted']))}")
     path.write_text("\n".join(lines) + "\n")
 
@@ -328,8 +369,11 @@ class EventLoggerControlApp:
             "active_recording": {
                 "active": active is not None,
                 "basename": active.get("basename") if active else None,
+                "user": active.get("user") if active else "anonymous",
+                "notes": active.get("notes") if active else "",
                 "start_utc": active.get("start_utc") if active else None,
                 "start_local": active.get("start_local") if active else None,
+                "timezone": active.get("timezone") if active else None,
                 "filename": recording_filename(active),
                 "input_rising_baselines": dict(active.get("input_rising_baselines", {})) if active else {},
             },
@@ -340,17 +384,21 @@ class EventLoggerControlApp:
             "inputs": read_inputs_state(self.root_dir),
         }
 
-    def start_recording(self, basename: str | None) -> dict:
+    def start_recording(self, basename: str | None, user: str | None = None, notes: str | None = None) -> dict:
         if self.get_active_recording() is not None:
             raise ControlError("recording already active")
 
         now = self.now_utc()
         start_ns = utc_ns_from_datetime(now)
         basename_normalized = validate_basename(normalize_basename(basename))
+        user_normalized = normalize_user(user)
+        notes_normalized = normalize_notes(notes)
         local_start = now.astimezone(self.local_timezone)
         inputs_state = read_inputs_state(self.root_dir)
         recording = {
             "basename": basename_normalized,
+            "user": user_normalized,
+            "notes": notes_normalized,
             "start_utc": format_utc_iso(now),
             "start_ns": start_ns,
             "start_local": local_start.replace(tzinfo=None).isoformat(timespec="seconds"),
@@ -374,11 +422,15 @@ class EventLoggerControlApp:
         self.set_active_recording(recording)
         return recording
 
-    def stop_recording(self) -> dict:
+    def stop_recording(self, user: str | None = None, notes: str | None = None) -> dict:
         recording = self.get_active_recording()
         if recording is None:
             raise ControlError("no active recording")
 
+        if user is not None:
+            recording["user"] = normalize_user(user)
+        if notes is not None:
+            recording["notes"] = normalize_notes(notes)
         now = self.now_utc()
         recording["stop_utc"] = format_utc_iso(now)
         recording["stop_ns"] = utc_ns_from_datetime(now)
@@ -433,11 +485,12 @@ def make_http_server(host: str, port: int, app: EventLoggerControlApp) -> Thread
             try:
                 if path == "/v1/recordings/start":
                     payload = self._read_json()
-                    recording = app.start_recording(payload.get("basename"))
+                    recording = app.start_recording(payload.get("basename"), payload.get("user"), payload.get("notes"))
                     self._send_json({"recording": recording})
                     return
                 if path == "/v1/recordings/stop":
-                    result = app.stop_recording()
+                    payload = self._read_json()
+                    result = app.stop_recording(payload.get("user"), payload.get("notes"))
                     self._send_json(result)
                     return
                 self.send_error(HTTPStatus.NOT_FOUND)
