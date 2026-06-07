@@ -1,7 +1,5 @@
 # Raspberry Pi Event Logger
 
-## Purpose
-
 The Raspberry Pi event logger continuously records digital input transitions on
 configured GPIO pins and assigns each transition a UTC timestamp. It is meant
 for cases where cameras, behavioral hardware, or other devices emit TTL pulses
@@ -9,6 +7,26 @@ that need to be aligned to the NeuroKairos time base.
 
 The important design choice is that capture is always on. The system does not
 depend on a user pressing "record" before data exists.
+
+To use the event logger, leave the logger service running and connect your TTL
+source to one of the configured inputs. From a PC on the same network, open the
+event logger web UI, enter a basename and any notes you want saved with the
+recording, then start and stop the recording from that page. The logger will
+continuously collect edges in the background whether or not you start a
+recording in the UI. When you do use the UI to start and stop a recording, the
+system saves a user-facing export for that time window rather than starting a
+separate acquisition.
+
+The files you end up with are simple tab-separated value files plus a metadata
+sidecar. A recording export looks like a `.tsv` file containing UTC timestamps,
+input names, and edge directions, along with a matching `.yaml` file that
+stores details such as the basename, times, user information, and notes. You
+can access the exported recordings from a PC over the Raspberry Pi's SMB share,
+where the event logger data is exposed read-only. Within that share, raw
+continuous logs are in `journal/` and exported recordings are in `recordings/`.
+
+For more details about how the event logger is structured internally, see the
+detailed breakdown below.
 
 ## Main Components
 
