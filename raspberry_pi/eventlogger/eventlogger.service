@@ -1,0 +1,20 @@
+[Unit]
+Description=NeuroKairos TTL Event Logger
+After=multi-user.target chronyd.service
+Wants=chronyd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/neurokairos-eventlogger -c /etc/neurokairos/eventlogger.conf
+Restart=always
+RestartSec=5
+User=root
+StandardOutput=journal
+StandardError=journal
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+# BEGIN NeuroKairos event logger shares
+[neurokairos-eventlogger-recordings]
+   path = /var/lib/neurokairos/eventlogger/recordings
+   browseable = yes
+   guest ok = yes
+   guest only = yes
+   read only = no
+
+[neurokairos-eventlogger-journal]
+   path = /var/lib/neurokairos/eventlogger/journal
+   browseable = yes
+   guest ok = yes
+   guest only = yes
+   read only = yes
+# END NeuroKairos event logger shares

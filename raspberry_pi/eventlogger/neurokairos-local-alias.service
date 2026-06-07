@@ -1,0 +1,14 @@
+[Unit]
+Description=Publish neurokairos.local mDNS alias
+After=network-online.target avahi-daemon.service
+Wants=network-online.target avahi-daemon.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/neurokairos-eventlogger/publish_neurokairos_alias.sh
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

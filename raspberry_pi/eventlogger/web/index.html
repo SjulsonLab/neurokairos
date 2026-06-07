@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Event Logger Test UI</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d1217;
+      --panel: #151c24;
+      --panel-2: #1b2530;
+      --text: #ecf2f7;
+      --muted: #99a8b7;
+      --line: #2a3643;
+      --accent: #2f7cff;
+      --accent-pressed: #1f5ed0;
+      --field-bg: #0f151b;
+      --field-disabled-bg: #141b23;
+      --field-disabled-text: #7d8996;
+      --field-disabled-line: #24303c;
+      --record-button-bg: #2492ff;
+      --record-button-hover: #43a3ff;
+      --record-button-pressed: #1f70e2;
+      --record-core-off: #5a1d1d;
+      --stop-border: #5a6a7b;
+      --stop-border-hover: #6b7d91;
+      --button-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.24);
+      --hover-surface: #1c2630;
+      --hover-line: #364353;
+      --ring: rgba(255, 255, 255, 0.06);
+      --active: #42ff8c;
+      --inactive: #5d6774;
+      --error: #ff7d7d;
+      --shadow: rgba(0, 0, 0, 0.28);
+    }
+
+    html[data-theme="light"] {
+      color-scheme: light;
+      --bg: #edf1f4;
+      --panel: #f8fafc;
+      --panel-2: #e7edf3;
+      --text: #16202a;
+      --muted: #61707d;
+      --line: #cdd5de;
+      --accent: #226fe0;
+      --accent-pressed: #1b5cc0;
+      --field-bg: #ffffff;
+      --field-disabled-bg: #e9eef3;
+      --field-disabled-text: #7a8590;
+      --field-disabled-line: #d5dde6;
+      --record-button-bg: #2d82ed;
+      --record-button-hover: #4d97f0;
+      --record-button-pressed: #1f6fd9;
+      --record-core-off: #7a3030;
+      --stop-border: #768391;
+      --stop-border-hover: #66707a;
+      --button-shadow: inset 0 2px 6px rgba(31, 49, 68, 0.14);
+      --hover-surface: #dde6ef;
+      --hover-line: #bcc8d5;
+      --ring: rgba(21, 33, 46, 0.08);
+      --active: #0bb35a;
+      --inactive: #98a4af;
+      --error: #c83939;
+      --shadow: rgba(28, 40, 52, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    main {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 28px 20px 40px;
+    }
+
+    h1, h2 {
+      margin: 0 0 10px;
+      font-weight: 600;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: 28px;
+    }
+
+    h2 {
+      font-size: 18px;
+    }
+
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      margin-bottom: 16px;
+      box-shadow: 0 10px 24px var(--shadow);
+    }
+
+    .intro {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: end;
+      flex-wrap: wrap;
+    }
+
+    .service-status {
+      font-size: 14px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .theme-toggle {
+      min-width: 108px;
+      padding: 9px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel-2);
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease, transform 0.08s ease;
+    }
+
+    .theme-toggle:hover {
+      background: var(--hover-surface);
+      border-color: var(--hover-line);
+    }
+
+    .theme-toggle:active {
+      transform: translateY(1px);
+    }
+
+    .recording-row {
+      display: grid;
+      grid-template-columns: minmax(360px, 1fr) auto;
+      gap: 24px;
+      align-items: end;
+    }
+
+    .recording-controls {
+      display: inline-flex;
+      gap: 10px;
+      align-items: flex-start;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    input,
+    textarea {
+      width: 100%;
+      min-width: 0;
+      font: inherit;
+      padding: 11px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--field-bg);
+      color: var(--text);
+      outline: none;
+    }
+
+    input:focus,
+    textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+
+    input:disabled {
+      background: var(--field-disabled-bg);
+      color: var(--field-disabled-text);
+      border-color: var(--field-disabled-line);
+      cursor: not-allowed;
+    }
+
+    textarea {
+      min-height: 176px;
+      resize: vertical;
+    }
+
+    .control-cluster {
+      display: grid;
+      justify-items: center;
+      gap: 6px;
+    }
+
+    .control-label {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1;
+    }
+
+    .control-button {
+      width: 54px;
+      height: 54px;
+      padding: 0;
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      background: var(--accent);
+      color: #ffffff;
+      font: inherit;
+      cursor: pointer;
+      transition: transform 0.08s ease, background 0.08s ease, border-color 0.08s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .record-core,
+    .stop-icon {
+      display: inline-block;
+      flex: 0 0 auto;
+    }
+
+    .record-button {
+      position: relative;
+      border-color: var(--record-button-bg);
+      background: var(--record-button-bg);
+    }
+
+    .record-button:hover:enabled {
+      background: var(--record-button-hover);
+    }
+
+    .record-core {
+      width: 23px;
+      height: 23px;
+      border-radius: 50%;
+      background: var(--record-core-off);
+      box-shadow: 0 0 0 1px var(--ring);
+    }
+
+    .stop-icon {
+      width: 23px;
+      height: 23px;
+      border-radius: 4px;
+      background: currentColor;
+    }
+
+    .control-button:active:enabled,
+    .control-button.is-active {
+      background: var(--accent-pressed);
+      border-color: var(--accent-pressed);
+      transform: translateY(1px);
+      box-shadow: var(--button-shadow);
+    }
+
+    .record-button:active:enabled,
+    .record-button.is-active {
+      background: var(--record-button-pressed);
+      border-color: var(--record-button-pressed);
+      box-shadow: var(--button-shadow);
+    }
+
+    .control-button[disabled] {
+      opacity: 0.45;
+      cursor: default;
+    }
+
+    .stop-button {
+      background: transparent;
+      border-color: var(--stop-border);
+      color: var(--text);
+    }
+
+    .stop-button:hover:enabled {
+      background: var(--hover-surface);
+      border-color: var(--stop-border-hover);
+    }
+
+    .record-core.active {
+      background: #ff0000;
+      box-shadow: 0 0 16px rgba(255, 0, 0, 1);
+      animation: blink 1s steps(1, end) infinite;
+    }
+
+    .recording-status-block {
+      margin-top: 14px;
+      display: block;
+    }
+
+    .recording-metrics {
+      display: grid;
+      gap: 6px;
+    }
+
+    .status-line {
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .status-line strong {
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .result-status {
+      margin-top: 12px;
+      font-size: 14px;
+      color: var(--muted);
+      word-break: break-word;
+    }
+
+    .error {
+      margin-top: 8px;
+      font-size: 14px;
+      color: var(--error);
+    }
+
+    .inputs-layout {
+      display: grid;
+      grid-template-columns: 132px minmax(0, 1fr);
+      column-gap: 10px;
+      row-gap: 8px;
+      align-items: start;
+    }
+
+    .inputs-label {
+      color: var(--muted);
+      font-size: 14px;
+      padding-top: 27px;
+    }
+
+    .input-strip {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+
+    .input-stack {
+      width: 54px;
+      display: grid;
+      grid-template-rows: 23px 24px;
+      justify-items: center;
+      row-gap: 5px;
+    }
+
+    .indicator {
+      width: 23px;
+      height: 23px;
+      border-radius: 50%;
+      background: var(--inactive);
+      box-shadow: 0 0 0 1px var(--ring);
+    }
+
+    .indicator.high {
+      background: var(--active);
+      box-shadow: 0 0 12px rgba(66, 255, 140, 0.35);
+    }
+
+    .input-number {
+      font-size: 15px;
+      color: var(--muted);
+      line-height: 1;
+      margin-top: 4px;
+    }
+
+    .pulse-strip {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+
+    .pulse-box {
+      width: 54px;
+      height: 26px;
+      padding: 0 6px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    .pulse-label {
+      color: var(--muted);
+      font-size: 14px;
+      padding-top: 4px;
+    }
+
+    @keyframes blink {
+      0%, 49% {
+        opacity: 1;
+      }
+      50%, 100% {
+        opacity: 0.3;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .recording-row {
+        grid-template-columns: 1fr;
+      }
+
+      .recording-status-block {
+        grid-template-columns: 1fr;
+      }
+
+      .recording-report {
+        min-width: 0;
+      }
+
+      .inputs-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .inputs-label,
+      .pulse-label {
+        padding-top: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="panel">
+      <div class="intro">
+        <div>
+          <h1>Event Logger Test UI</h1>
+          <p>This page polls input status every 100 ms and exercises the temporary recording API.</p>
+        </div>
+        <div class="header-actions">
+          <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light and dark theme" aria-pressed="false">Light Theme</button>
+          <div class="service-status" id="service-status">Loading status...</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Recording</h2>
+      <div class="recording-row">
+        <div class="field">
+          <label for="basename">Basename:</label>
+          <input id="basename" type="text" placeholder="events">
+        </div>
+        <div class="recording-controls">
+          <div class="control-cluster">
+            <button id="start-button" class="control-button record-button" type="button" title="Record" aria-label="Record">
+              <span class="record-core" id="record-light" aria-hidden="true"></span>
+            </button>
+            <div class="control-label">Record</div>
+          </div>
+          <div class="control-cluster">
+            <button id="stop-button" class="control-button stop-button" type="button" title="Stop" aria-label="Stop">
+              <span class="stop-icon" aria-hidden="true"></span>
+            </button>
+            <div class="control-label">Stop</div>
+          </div>
+        </div>
+      </div>
+      <div class="field" style="margin-top: 12px;">
+        <label for="user">User:</label>
+        <input id="user" type="text" placeholder="anonymous">
+      </div>
+      <div class="field" style="margin-top: 12px;">
+        <label for="notes">Notes:</label>
+        <textarea id="notes" placeholder="Notes typed here will be saved in the YAML logfile when Stop is pressed"></textarea>
+      </div>
+      <div class="recording-status-block">
+        <div class="recording-metrics">
+          <div class="status-line" id="recording-state-line"><strong>Status:</strong> idle</div>
+          <div class="status-line" id="filename-line"><strong>Filename:</strong> not recording</div>
+          <div class="status-line" id="duration-line"><strong>Duration:</strong> 00:00:00</div>
+          <div class="status-line" id="recording-report-line"><strong>Recorder:</strong> Recorder idle</div>
+          <div class="status-line" id="timezone-line"><strong>Timezone:</strong> unknown</div>
+        </div>
+      </div>
+      <div class="error" id="error-status"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Inputs</h2>
+      <div class="inputs-layout">
+        <div class="inputs-label">Digital inputs:</div>
+        <div class="input-strip" id="input-indicators"></div>
+        <div class="pulse-label">Pulses recorded</div>
+        <div class="pulse-strip" id="pulse-counts"></div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const THEME_STORAGE_KEY = "eventlogger-theme";
+    let lastRisingCounts = new Map();
+    let pulseWindowStreaks = new Map();
+    let latestStatus = null;
+    let lastStatusMessage = "<strong>Status:</strong> idle";
+    let lastRecordingFilename = null;
+    let statusMessageMode = "live";
+    let stopInFlight = false;
+    const POLL_INTERVAL_MS = 100;
+    const UI_REFRESH_MS = 250;
+
+    function formatDuration(startUtc) {
+      if (!startUtc) {
+        return "00:00:00";
+      }
+      const startMs = Date.parse(startUtc);
+      if (Number.isNaN(startMs)) {
+        return "00:00:00";
+      }
+      const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+      const hours = String(Math.floor(elapsedSeconds / 3600)).padStart(2, "0");
+      const minutes = String(Math.floor((elapsedSeconds % 3600) / 60)).padStart(2, "0");
+      const seconds = String(elapsedSeconds % 60).padStart(2, "0");
+      return `${hours}:${minutes}:${seconds}`;
+    }
+
+    function formatLocalTimestamp(isoText) {
+      if (!isoText) {
+        return "unknown time";
+      }
+      const date = new Date(isoText);
+      if (Number.isNaN(date.getTime())) {
+        return isoText;
+      }
+      return date.toLocaleString();
+    }
+
+    function formatStatusDateTime(isoText) {
+      if (!isoText) {
+        return "unknown time";
+      }
+      const date = new Date(isoText);
+      if (Number.isNaN(date.getTime())) {
+        return isoText;
+      }
+      const datePart = date.toLocaleDateString([], {
+        year: "numeric",
+        month: "numeric",
+        day: "numeric"
+      });
+      const timePart = date.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+      return `${datePart} at ${timePart} local time`;
+    }
+
+    function applyTheme(theme) {
+      const resolvedTheme = theme === "light" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", resolvedTheme);
+      const toggle = document.getElementById("theme-toggle");
+      toggle.textContent = resolvedTheme === "dark" ? "Light Theme" : "Dark Theme";
+      toggle.setAttribute("aria-pressed", resolvedTheme === "light" ? "true" : "false");
+    }
+
+    function initializeTheme() {
+      const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+      applyTheme(savedTheme === "light" ? "light" : "dark");
+    }
+
+    function toggleTheme() {
+      const currentTheme = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+      const nextTheme = currentTheme === "light" ? "dark" : "light";
+      window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+      applyTheme(nextTheme);
+    }
+
+    function renderInputs(status) {
+      const inputs = status.inputs;
+      const baselines = status.active_recording.input_rising_baselines ?? {};
+      const recordingActive = status.active_recording.active;
+      const indicatorContainer = document.getElementById("input-indicators");
+      const pulseContainer = document.getElementById("pulse-counts");
+      indicatorContainer.innerHTML = "";
+      pulseContainer.innerHTML = "";
+      for (const input of inputs) {
+        const previousRising = lastRisingCounts.get(input.name) ?? input.rising_count;
+        const risingDelta = Math.max(0, Number(input.rising_count) - Number(previousRising));
+        const currentLevelHigh = input.current_level === 1;
+        let pulseWindowStreak = pulseWindowStreaks.get(input.name) ?? 0;
+        if (currentLevelHigh) {
+          pulseWindowStreak = 0;
+        } else if (risingDelta > 0) {
+          pulseWindowStreak += 1;
+        } else {
+          pulseWindowStreak = 0;
+        }
+        const transientHigh = !currentLevelHigh && risingDelta > 0 && pulseWindowStreak % 2 === 1;
+        const displayHigh = currentLevelHigh || transientHigh;
+        lastRisingCounts.set(input.name, input.rising_count);
+        pulseWindowStreaks.set(input.name, pulseWindowStreak);
+
+        const inputNumber = String(input.name).replace(/^DIN/i, "");
+        const indicatorStack = document.createElement("div");
+        indicatorStack.className = "input-stack";
+        indicatorStack.innerHTML = `
+          <span class="indicator ${displayHigh ? "high" : ""}" title="${input.name}"></span>
+          <span class="input-number">${inputNumber}</span>
+        `;
+        indicatorContainer.appendChild(indicatorStack);
+
+        const baseline = Number(baselines[input.name] ?? 0);
+        const recordingCount = recordingActive ? Math.max(0, Number(input.rising_count) - baseline) : 0;
+        const pulseBox = document.createElement("div");
+        pulseBox.className = "pulse-box";
+        pulseBox.textContent = String(recordingCount);
+        pulseContainer.appendChild(pulseBox);
+      }
+    }
+
+    function renderStatus(status) {
+      const wasActive = latestStatus?.active_recording?.active === true;
+      latestStatus = status;
+      const active = status.active_recording.active;
+      const startButton = document.getElementById("start-button");
+      const stopButton = document.getElementById("stop-button");
+      const basenameInput = document.getElementById("basename");
+      const userInput = document.getElementById("user");
+      const notesInput = document.getElementById("notes");
+      const recordLight = document.getElementById("record-light");
+      const recordingReport = document.getElementById("recording-report-line");
+
+      document.getElementById("service-status").textContent =
+        `capture service: ${status.capture_service_running ? "running" : "not running"} | control service: running`;
+
+      startButton.classList.toggle("is-active", active);
+      startButton.disabled = active;
+      stopButton.disabled = !active || stopInFlight;
+      basenameInput.disabled = active;
+      userInput.disabled = active;
+      if (active && !wasActive) {
+        userInput.value = status.active_recording.user === "anonymous" ? "" : (status.active_recording.user ?? "");
+        notesInput.value = status.active_recording.notes ?? "";
+      }
+      recordLight.classList.toggle("active", active);
+      const timezoneText = status.active_recording.timezone ?? "unknown";
+      const timezoneLine = document.getElementById("timezone-line");
+      recordingReport.innerHTML = stopInFlight
+        ? "<strong>Recorder:</strong> Stopping and saving recording..."
+        : active
+        ? "<strong>Recorder:</strong> Recording in progress"
+        : "<strong>Recorder:</strong> Recorder idle";
+      timezoneLine.innerHTML = `<strong>Timezone:</strong> ${timezoneText}`;
+
+      const startLocal = status.active_recording.start_local;
+      const stopUtc = status.active_recording.stop_utc;
+      const activeUser = status.active_recording.user ?? "anonymous";
+      if (active) {
+        if (status.active_recording.filename) {
+          lastRecordingFilename = status.active_recording.filename;
+        }
+        statusMessageMode = "live";
+        lastStatusMessage = `<strong>Status:</strong> Recording ${status.active_recording.basename} by ${activeUser} started at ${formatStatusDateTime(startLocal)}`;
+      } else if (stopUtc) {
+        statusMessageMode = "saved";
+        lastStatusMessage = `<strong>Status:</strong> Recording saved at ${formatStatusDateTime(stopUtc)}`;
+      } else if (statusMessageMode === "saved") {
+        lastStatusMessage = lastStatusMessage;
+      }
+      document.getElementById("recording-state-line").innerHTML = lastStatusMessage;
+      const displayFilename = active
+        ? (status.active_recording.filename ?? lastRecordingFilename)
+        : lastRecordingFilename;
+      document.getElementById("filename-line").innerHTML = displayFilename
+        ? `<strong>Filename:</strong> ${displayFilename}`
+        : "<strong>Filename:</strong> not recording";
+      renderDuration(status);
+
+      renderInputs(status);
+    }
+
+    function renderDuration(status) {
+      const active = status?.active_recording?.active === true;
+      const startUtc = status?.active_recording?.start_utc;
+      document.getElementById("duration-line").innerHTML =
+        `<strong>Duration:</strong> ${active ? formatDuration(startUtc) : "00:00:00"}`;
+    }
+
+    async function pollStatus() {
+      const response = await fetch("/v1/status");
+      const status = await response.json();
+      renderStatus(status);
+    }
+
+    async function startRecording() {
+      document.getElementById("error-status").textContent = "";
+      const basename = document.getElementById("basename").value;
+      const user = document.getElementById("user").value;
+      const notes = document.getElementById("notes").value;
+      const response = await fetch("/v1/recordings/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ basename, user, notes })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        document.getElementById("error-status").textContent = payload.error;
+        return;
+      }
+      if (payload.recording.filename) {
+        lastRecordingFilename = payload.recording.filename;
+      }
+      statusMessageMode = "live";
+      lastStatusMessage = `<strong>Status:</strong> Recording ${payload.recording.basename} by ${payload.recording.user} started at ${formatStatusDateTime(payload.recording.start_local)}`;
+      document.getElementById("recording-state-line").innerHTML = lastStatusMessage;
+      await pollStatus();
+    }
+
+    async function stopRecording() {
+      document.getElementById("error-status").textContent = "";
+      const user = document.getElementById("user").value;
+      const notes = document.getElementById("notes").value;
+      stopInFlight = true;
+      document.getElementById("recording-report-line").innerHTML = "<strong>Recorder:</strong> Stopping and saving recording...";
+      document.getElementById("stop-button").disabled = true;
+      const response = await fetch("/v1/recordings/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user, notes })
+      });
+      const payload = await response.json();
+      stopInFlight = false;
+      if (!response.ok) {
+        document.getElementById("error-status").textContent = payload.error;
+        if (latestStatus) {
+          renderStatus(latestStatus);
+        }
+        return;
+      }
+      if (payload.recording.filename) {
+        lastRecordingFilename = payload.recording.filename;
+      }
+      statusMessageMode = "saved";
+      lastStatusMessage = `<strong>Status:</strong> Recording saved at ${formatStatusDateTime(payload.recording.stop_utc)}`;
+      document.getElementById("recording-state-line").innerHTML = lastStatusMessage;
+      await pollStatus();
+    }
+
+    document.getElementById("start-button").addEventListener("click", startRecording);
+    document.getElementById("stop-button").addEventListener("click", stopRecording);
+    document.getElementById("theme-toggle").addEventListener("click", toggleTheme);
+
+    initializeTheme();
+    pollStatus().catch((error) => {
+      document.getElementById("error-status").textContent = String(error);
+    });
+
+    setInterval(() => {
+      renderDuration(latestStatus);
+    }, UI_REFRESH_MS);
+
+    setInterval(() => {
+      pollStatus().catch((error) => {
+        document.getElementById("error-status").textContent = String(error);
+      });
+    }, POLL_INTERVAL_MS);
+  </script>
+</body>
+</html>

@@ -1,0 +1,485 @@
+#include "eventlogger_core.h"
+
+#include <dirent.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <unistd.h>
+
+static int mkdir_p(const char *path)
+{
+    char tmp[EVENTLOGGER_PATH_LEN];
+    char *cursor;
+
+    snprintf(tmp, sizeof(tmp), "%s", path);
+    for (cursor = tmp + 1; *cursor; cursor++) {
+        if (*cursor == '/') {
+            *cursor = '\0';
+            if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+                return -1;
+            }
+            *cursor = '/';
+        }
+    }
+    if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+        return -1;
+    }
+    return 0;
+}
+
+static void parent_dir_from_path(const char *path, char *dest, size_t dest_len)
+{
+    char tmp[EVENTLOGGER_PATH_LEN];
+    char *slash;
+
+    snprintf(tmp, sizeof(tmp), "%s", path);
+    slash = strrchr(tmp, '/');
+    if (!slash || slash == tmp) {
+        snprintf(dest, dest_len, ".");
+        return;
+    }
+    *slash = '\0';
+    snprintf(dest, dest_len, "%s", tmp);
+}
+
+static int file_exists_and_nonempty(const char *path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return 0;
+    }
+    return st.st_size > 0;
+}
+
+static int join_path(char *dest, size_t dest_len, const char *dir, const char *name)
+{
+    int written = snprintf(dest, dest_len, "%s/%s", dir, name);
+    if (written < 0 || (size_t)written >= dest_len) {
+        return -1;
+    }
+    return 0;
+}
+
+static int build_month_bucket(char *dest, size_t dest_len, const char *root_dir,
+                              const char *date, const char *suffix)
+{
+    int written;
+
+    if (strlen(date) < 7) {
+        return -1;
+    }
+    written = snprintf(dest, dest_len, "%s/%.7s_%s", root_dir, date, suffix);
+    if (written < 0 || (size_t)written >= dest_len) {
+        return -1;
+    }
+    return 0;
+}
+
+static int append_suffix(char *dest, size_t dest_len, const char *base, const char *suffix)
+{
+    int written = snprintf(dest, dest_len, "%s%s", base, suffix);
+    if (written < 0 || (size_t)written >= dest_len) {
+        return -1;
+    }
+    return 0;
+}
+
+static int64_t timespec_to_ns(const struct timespec *ts)
+{
+    return (int64_t)ts->tv_sec * 1000000000LL + (int64_t)ts->tv_nsec;
+}
+
+int eventlogger_format_utc_from_ns(int64_t realtime_ns, char *date_out, size_t date_len,
+                                   char *time_out, size_t time_len)
+{
+    time_t seconds = (time_t)(realtime_ns / 1000000000LL);
+    long nanoseconds = (long)(realtime_ns % 1000000000LL);
+    struct tm tm_utc;
+
+    if (nanoseconds < 0) {
+        seconds--;
+        nanoseconds += 1000000000L;
+    }
+
+    if (gmtime_r(&seconds, &tm_utc) == NULL) {
+        return -1;
+    }
+
+    snprintf(date_out, date_len, "%04d-%02d-%02d",
+             tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday);
+    snprintf(time_out, time_len, "%04d-%02d-%02dT%02d:%02d:%02d.%09ldZ",
+             tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday,
+             tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec, nanoseconds);
+    return 0;
+}
+
+void eventlogger_journal_init(eventlogger_journal_t *journal)
+{
+    memset(journal, 0, sizeof(*journal));
+}
+
+void eventlogger_journal_close(eventlogger_journal_t *journal)
+{
+    if (journal->event_file) {
+        fclose(journal->event_file);
+        journal->event_file = NULL;
+    }
+    if (journal->status_file) {
+        fclose(journal->status_file);
+        journal->status_file = NULL;
+    }
+}
+
+static int open_daily_file(FILE **file, char *stored_date, size_t stored_date_len,
+                           char *stored_path, size_t stored_path_len,
+                           const char *journal_dir, const char *bucket_suffix, const char *prefix,
+                           const char *date, const char *header)
+{
+    char bucket_dir[EVENTLOGGER_PATH_LEN];
+    char filename[EVENTLOGGER_PATH_LEN];
+    int needs_header;
+    size_t prefix_len;
+    size_t date_len;
+
+    if (*file && strcmp(stored_date, date) == 0) {
+        return 0;
+    }
+
+    if (*file) {
+        fclose(*file);
+        *file = NULL;
+    }
+
+    if (mkdir_p(journal_dir) != 0) {
+        return -1;
+    }
+
+    if (build_month_bucket(bucket_dir, sizeof(bucket_dir), journal_dir, date, bucket_suffix) != 0) {
+        return -1;
+    }
+    if (mkdir_p(bucket_dir) != 0) {
+        return -1;
+    }
+
+    snprintf(stored_date, stored_date_len, "%s", date);
+    prefix_len = strlen(prefix);
+    date_len = strlen(date);
+    if (prefix_len + 1 + date_len + 4 + 1 > sizeof(filename)) {
+        return -1;
+    }
+    memcpy(filename, prefix, prefix_len);
+    filename[prefix_len] = '_';
+    memcpy(filename + prefix_len + 1, date, date_len);
+    memcpy(filename + prefix_len + 1 + date_len, ".tsv", 5);
+    if (join_path(stored_path, stored_path_len, bucket_dir, filename) != 0) {
+        return -1;
+    }
+    needs_header = !file_exists_and_nonempty(stored_path);
+
+    *file = fopen(stored_path, "a");
+    if (!*file) {
+        return -1;
+    }
+    if (needs_header && fputs(header, *file) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+int eventlogger_journal_write_event(eventlogger_journal_t *journal,
+                                    const eventlogger_config_t *config,
+                                    int64_t realtime_ns,
+                                    int64_t monotonic_ns,
+                                    const char *input_name,
+                                    const char *edge)
+{
+    char date[11];
+    char utc_time[32];
+
+    if (eventlogger_format_utc_from_ns(realtime_ns, date, sizeof(date),
+                                       utc_time, sizeof(utc_time)) != 0) {
+        return -1;
+    }
+    if (open_daily_file(&journal->event_file, journal->event_date, sizeof(journal->event_date),
+                        journal->event_path, sizeof(journal->event_path),
+                        config->journal_dir, "journal", "all_events", date,
+                        "utc_time\trealtime_ns\tmonotonic_ns\tinput\tedge\n") != 0) {
+        return -1;
+    }
+
+    if (fprintf(journal->event_file, "%s\t%lld\t%lld\t%s\t%s\n",
+                utc_time, (long long)realtime_ns, (long long)monotonic_ns,
+                input_name, edge) < 0) {
+        return -1;
+    }
+    journal->pending_event_lines++;
+    return 0;
+}
+
+int eventlogger_journal_write_status(eventlogger_journal_t *journal,
+                                     const eventlogger_config_t *config,
+                                     const eventlogger_chrony_status_t *status)
+{
+    char date[11];
+    int64_t now_ns = 0;
+    struct timespec now;
+
+    if (clock_gettime(CLOCK_REALTIME, &now) == 0) {
+        now_ns = timespec_to_ns(&now);
+    }
+    if (eventlogger_format_utc_from_ns(now_ns, date, sizeof(date), (char[32]){0}, 32) != 0) {
+        return -1;
+    }
+    if (open_daily_file(&journal->status_file, journal->status_date, sizeof(journal->status_date),
+                        journal->status_path, sizeof(journal->status_path),
+                        config->journal_dir, "journal", "chrony_status", date,
+                        "timestamp_utc\treference_id\tstratum\tleap_status\tsystem_time_s\tlast_offset_s\trms_offset_s\troot_delay_s\troot_dispersion_s\tfrequency_ppm\tskew_ppm\n") != 0) {
+        return -1;
+    }
+
+    if (fprintf(journal->status_file,
+                "%s\t%s\t%d\t%s\t%.12g\t%.12g\t%.12g\t%.12g\t%.12g\t%.12g\t%.12g\n",
+                status->timestamp_utc, status->reference_id, status->stratum, status->leap_status,
+                status->system_time_s, status->last_offset_s, status->rms_offset_s,
+                status->root_delay_s, status->root_dispersion_s,
+                status->frequency_ppm, status->skew_ppm) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+int eventlogger_journal_maybe_flush(eventlogger_journal_t *journal,
+                                    const eventlogger_config_t *config,
+                                    time_t now,
+                                    bool force)
+{
+    bool count_due = config->flush_event_count > 0 &&
+                     journal->pending_event_lines >= (unsigned int)config->flush_event_count;
+    bool time_due = journal->last_flush_time == 0 ||
+                    (config->flush_interval_ms > 0 &&
+                     (now - journal->last_flush_time) * 1000 >= config->flush_interval_ms);
+
+    if (!force && !count_due && !time_due) {
+        return 0;
+    }
+    if (journal->event_file && fflush(journal->event_file) != 0) {
+        return -1;
+    }
+    if (journal->status_file && fflush(journal->status_file) != 0) {
+        return -1;
+    }
+    journal->pending_event_lines = 0;
+    journal->last_flush_time = now;
+    return 0;
+}
+
+typedef struct {
+    char path[EVENTLOGGER_PATH_LEN];
+    time_t mtime;
+} cleanup_candidate_t;
+
+static int compare_candidates(const void *a, const void *b)
+{
+    const cleanup_candidate_t *left = (const cleanup_candidate_t *)a;
+    const cleanup_candidate_t *right = (const cleanup_candidate_t *)b;
+    if (left->mtime < right->mtime) {
+        return -1;
+    }
+    if (left->mtime > right->mtime) {
+        return 1;
+    }
+    return strcmp(left->path, right->path);
+}
+
+static double free_space_gb(const char *path)
+{
+    struct statvfs fs;
+    if (statvfs(path, &fs) != 0) {
+        return -1.0;
+    }
+    return ((double)fs.f_bavail * (double)fs.f_frsize) / 1000000000.0;
+}
+
+static int append_cleanup_log(const char *journal_dir, const char *message, const char *path)
+{
+    char log_path[EVENTLOGGER_PATH_LEN];
+    FILE *file;
+    struct timespec now;
+    char date[11];
+    char utc_time[32];
+
+    if (clock_gettime(CLOCK_REALTIME, &now) != 0) {
+        return -1;
+    }
+    eventlogger_format_utc_from_ns(timespec_to_ns(&now), date, sizeof(date),
+                                   utc_time, sizeof(utc_time));
+    if (join_path(log_path, sizeof(log_path), journal_dir, "cleanup_audit.tsv") != 0) {
+        return -1;
+    }
+    file = fopen(log_path, "a");
+    if (!file) {
+        return -1;
+    }
+    fprintf(file, "%s\t%s\t%s\n", utc_time, message, path);
+    fclose(file);
+    return 0;
+}
+
+int eventlogger_cleanup_if_needed(const eventlogger_config_t *config,
+                                  const char *active_event_path,
+                                  const char *active_status_path)
+{
+    DIR *dir;
+    struct dirent *entry;
+    cleanup_candidate_t candidates[512];
+    size_t count = 0;
+    size_t i;
+    double free_gb;
+
+    free_gb = free_space_gb(config->journal_dir);
+    if (free_gb < 0 || free_gb >= config->cleanup_threshold_gb) {
+        return free_gb < 0 ? -1 : 0;
+    }
+
+    dir = opendir(config->journal_dir);
+    if (!dir) {
+        return -1;
+    }
+
+    while ((entry = readdir(dir)) != NULL && count < 512) {
+        struct stat st;
+        char path[EVENTLOGGER_PATH_LEN];
+        char nested_path[EVENTLOGGER_PATH_LEN];
+
+        if (strcmp(entry->d_name, "cleanup_audit.tsv") == 0) {
+            continue;
+        }
+        if (join_path(path, sizeof(path), config->journal_dir, entry->d_name) != 0) {
+            continue;
+        }
+        if (stat(path, &st) != 0) {
+            continue;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            DIR *month_dir;
+            struct dirent *month_entry;
+
+            month_dir = opendir(path);
+            if (!month_dir) {
+                continue;
+            }
+            while ((month_entry = readdir(month_dir)) != NULL && count < 512) {
+                size_t name_len = strlen(month_entry->d_name);
+
+                if (name_len < 4 || strcmp(month_entry->d_name + name_len - 4, ".tsv") != 0) {
+                    continue;
+                }
+                if (join_path(nested_path, sizeof(nested_path), path, month_entry->d_name) != 0) {
+                    continue;
+                }
+                if ((active_event_path && strcmp(nested_path, active_event_path) == 0) ||
+                    (active_status_path && strcmp(nested_path, active_status_path) == 0)) {
+                    continue;
+                }
+                if (stat(nested_path, &st) != 0 || !S_ISREG(st.st_mode)) {
+                    continue;
+                }
+                snprintf(candidates[count].path, sizeof(candidates[count].path), "%s", nested_path);
+                candidates[count].mtime = st.st_mtime;
+                count++;
+            }
+            closedir(month_dir);
+        }
+    }
+    closedir(dir);
+
+    qsort(candidates, count, sizeof(candidates[0]), compare_candidates);
+    for (i = 0; i < count && free_space_gb(config->journal_dir) < config->cleanup_target_gb; i++) {
+        if (unlink(candidates[i].path) == 0) {
+            append_cleanup_log(config->journal_dir, "deleted", candidates[i].path);
+        }
+    }
+    return 0;
+}
+
+int eventlogger_write_input_state(eventlogger_config_t *config)
+{
+    char root_dir[EVENTLOGGER_PATH_LEN];
+    char control_dir[EVENTLOGGER_PATH_LEN];
+    char state_path[EVENTLOGGER_PATH_LEN];
+    char tmp_path[EVENTLOGGER_PATH_LEN];
+    char generated_date[11];
+    char generated_time[32];
+    struct timespec now;
+    FILE *file;
+    int i;
+
+    if (clock_gettime(CLOCK_REALTIME, &now) != 0) {
+        return -1;
+    }
+    if (eventlogger_format_utc_from_ns(timespec_to_ns(&now), generated_date, sizeof(generated_date),
+                                       generated_time, sizeof(generated_time)) != 0) {
+        return -1;
+    }
+
+    parent_dir_from_path(config->journal_dir, root_dir, sizeof(root_dir));
+    if (join_path(control_dir, sizeof(control_dir), root_dir, "control") != 0) {
+        return -1;
+    }
+    if (join_path(state_path, sizeof(state_path), control_dir, "inputs.json") != 0) {
+        return -1;
+    }
+    if (append_suffix(tmp_path, sizeof(tmp_path), state_path, ".tmp") != 0) {
+        return -1;
+    }
+
+    if (mkdir_p(control_dir) != 0) {
+        return -1;
+    }
+    file = fopen(tmp_path, "w");
+    if (!file) {
+        return -1;
+    }
+
+    fprintf(file, "{\n");
+    fprintf(file, "  \"generated_utc\": \"%s\",\n", generated_time);
+    fprintf(file, "  \"inputs\": [\n");
+    for (i = 0; i < config->input_count; i++) {
+        eventlogger_input_t *input = &config->inputs[i];
+        fprintf(file, "    {\n");
+        fprintf(file, "      \"name\": \"%s\",\n", input->name);
+        fprintf(file, "      \"gpio\": %d,\n", input->gpio);
+        fprintf(file, "      \"enabled\": %s,\n", input->enabled ? "true" : "false");
+        fprintf(file, "      \"current_level\": %d,\n", input->current_level);
+        if (input->last_edge[0] != '\0') {
+            fprintf(file, "      \"last_edge\": \"%s\",\n", input->last_edge);
+        } else {
+            fprintf(file, "      \"last_edge\": null,\n");
+        }
+        if (input->last_edge_utc[0] != '\0') {
+            fprintf(file, "      \"last_edge_utc\": \"%s\",\n", input->last_edge_utc);
+        } else {
+            fprintf(file, "      \"last_edge_utc\": null,\n");
+        }
+        fprintf(file, "      \"rising_count\": %llu,\n", input->rising_count);
+        fprintf(file, "      \"falling_count\": %llu\n", input->falling_count);
+        fprintf(file, "    }%s\n", (i == config->input_count - 1) ? "" : ",");
+    }
+    fprintf(file, "  ]\n");
+    fprintf(file, "}\n");
+
+    if (fclose(file) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+    if (rename(tmp_path, state_path) != 0) {
+        unlink(tmp_path);
+        return -1;
+    }
+    return 0;
+}
