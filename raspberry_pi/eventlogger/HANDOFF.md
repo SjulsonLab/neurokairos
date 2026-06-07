@@ -11,174 +11,139 @@ Repository:
 Branch:
 `event-logger`
 
-Pi target:
-`pi@192.168.1.204`
-
 Primary URL:
 `http://neurokairos.local`
 
+Latest pushed commit:
+`f9c36a9` - `Update event logger recording metadata UI`
+
 ## Current local state
 
-Modified files in the local worktree:
+Current uncommitted worktree state:
 
-- `raspberry_pi/eventlogger/eventlogger_control.py`
-- `raspberry_pi/eventlogger/web/index.html`
-- `tests/test_eventlogger_control.py`
-- `raspberry_pi/eventlogger/README.md`
-- `raspberry_pi/eventlogger/event-logger.md`
+- modified: `raspberry_pi/eventlogger/HANDOFF.md`
+- untracked: `uv.lock`
 
-Unrelated local untracked file:
-
-- `raspberry_pi/sender/README.md`
-
-Important: do not treat `raspberry_pi/sender/README.md` as part of the current
-event logger UI task unless the user explicitly asks for it.
+Everything else for the event logger UI/backend/test changes is committed in
+`f9c36a9` and pushed to `origin/event-logger`.
 
 ## Test status
 
-Latest completed test runs on the local machine:
+Latest completed targeted test run on the Pi:
 
-- `uv run pytest tests/test_eventlogger_control.py -q` -> `11 passed`
-- `uv run pytest -q` -> `272 passed`
+- `uv run pytest tests/test_eventlogger_control.py -q` -> `15 passed`
 
-The previously interrupted full-suite run actually completed successfully.
+That run covers:
 
-## Pi deployment status
+- user normalization (`anonymous` fallback)
+- notes normalization
+- YAML export with `user` and `notes`
+- multiline notes YAML safety
+- status payload exposure for `user`, `notes`, and timezone
+- HTTP start/stop workflow with final stop-time metadata overwrite
 
-### Already deployed to the Pi
+## Deployment status
 
-The Pi is already running the earlier dark-theme / compact-input version with:
-
-- sans serif font
-- dark theme
-- reserved filename shown during recording
-- blinking record light
-- compact input dots
-
-Services previously verified active:
-
-- `neurokairos-eventlogger`
-- `neurokairos-eventlogger-control`
-- `neurokairos-local-alias`
-- `smbd`
-- `avahi-daemon`
-
-The Pi serves:
-
-- `http://127.0.0.1/`
-- `http://127.0.0.1/v1/status`
-
-### Not yet deployed to the Pi
-
-The most recent local-only UI/backend fixes below have **not** been deployed yet:
-
-1. `Pulses recorded` should show **recording-local counts**, not lifetime
-   `rising_count`.
-2. After stop, pulse boxes should stop incrementing.
-3. Remove the extra bottom generic result/status line from the recording panel.
-4. Remove the bottom `Enabled: DIN1 GPIO 5 ...` line.
-5. Tighten horizontal alignment of `Pulses recorded` relative to the counters.
-6. Make DIN numbers larger.
-7. Use more purely graphical icon-style record/stop buttons.
-
-Those changes exist locally in:
-
-- `raspberry_pi/eventlogger/eventlogger_control.py`
-- `raspberry_pi/eventlogger/web/index.html`
-- `tests/test_eventlogger_control.py`
-
-## What changed locally but is not yet on the Pi
-
-### Backend change
-
-`eventlogger_control.py` now snapshots per-input rising-edge baselines at
-recording start:
-
-- `recording["input_rising_baselines"] = {input_name: rising_count_at_start}`
-
-`build_status()` now exposes:
-
-- `active_recording["input_rising_baselines"]`
-
-This lets the frontend compute:
-
-- `recording-local pulse count = current rising_count - baseline`
-
-instead of showing lifetime edge totals.
-
-### Frontend change
-
-`web/index.html` now:
-
-- renders separate indicator and pulse-count rows
-- removes the bottom enabled-input metadata line
-- removes the duplicate result-status line
-- uses icon-style record/stop buttons
-- enlarges DIN numbers
-- tightens spacing between pulse boxes and their label
-- shows pulse boxes as recording-local counts only while recording
-- shows `0` when idle
-
-## Why the pulse-count bug happened
-
-The previous UI displayed raw `input.rising_count`, which is the daemon's
-continuous lifetime counter. That is correct for the raw status feed, but wrong
-for a recording-oriented display. The browser needed either:
-
-- journal slicing on every poll, which would be wasteful and wrong for a live UI
-- or a recording-start baseline, which is the correct solution
-
-The baseline approach is now implemented locally and tested.
-
-## Next steps on the Pi
-
-From the Pi:
-
-```bash
-cd /home/pi/neurokairos
-git status --short
-```
-
-If this worktree already has the same local edits, continue there. If not,
-either copy the local changes over or commit/push them from the Mac first.
-
-Once the updated files are present on the Pi, redeploy with:
+The Pi was redeployed successfully after the latest UI and metadata changes with:
 
 ```bash
 cd /home/pi/neurokairos
 sudo ./raspberry_pi/eventlogger/install_eventlogger.sh
 ```
 
-Then verify:
+Verified active services:
 
-```bash
-systemctl is-active neurokairos-eventlogger neurokairos-eventlogger-control
-curl -fsS http://127.0.0.1/v1/status
-curl -fsS http://127.0.0.1/ | grep -E 'control-button|Pulses recorded|Digital inputs:'
-```
+- `neurokairos-eventlogger`
+- `neurokairos-eventlogger-control`
 
-Then test from the Mac at:
+Verified live endpoints:
 
-`http://neurokairos.local`
+- `http://127.0.0.1/`
+- `http://127.0.0.1/v1/status`
 
-## Expected behavior after redeploy
+## Current shipped behavior
 
-- During recording:
-  - record button looks pressed
-  - blinking red light is active
-  - filename is stable and matches the final exported TSV name
-  - duration increments continuously
-  - pulse boxes increment from zero for that recording only
+### Recording metadata UI
 
-- After stop:
-  - record button returns to idle state
-  - blinking light stops
-  - pulse boxes return to zero and no longer increment
-  - no extra duplicate filename/status line remains under the recording panel
+The recording panel now includes:
 
-## Files most worth opening first on the Pi
+- `Basename`
+- `User`
+- `Notes`
+
+`User` behavior:
+
+- blank user input is normalized to `anonymous`
+- the current active user is exposed via `/v1/status`
+- the final user is written into the YAML sidecar as `user: "..."` 
+
+`Notes` behavior:
+
+- notes remain editable during recording
+- the final notes value is sent on `POST /v1/recordings/stop`
+- the YAML sidecar stores the final stop-time notes value
+
+### Status and recorder display
+
+The UI now:
+
+- polls every `100 ms`
+- shows a persistent `Status:` line with the last relevant event
+- while active, shows:
+  - `Recording <basename> by <user> started at <time>`
+- after stop, keeps showing:
+  - `Recording <basename> by <user> stopped at <time>`
+- shows `Recorder:` text on the right side
+- shows the recording timezone under `Recorder:`
+- gives immediate stop feedback:
+  - `Stopping and saving recording...`
+
+### Recording controls
+
+The record/stop controls now:
+
+- show `Record` and `Stop` labels under the buttons
+- use a blue record button with a center indicator
+- blink the red center dot while recording
+
+## Verified end-to-end exports
+
+Two real API-driven recordings were verified on the Pi during this session:
+
+- `notes_stop_check_2026-06-06_223444.yaml`
+- `user_note_check_2026-06-06_230000.yaml`
+
+Most recent metadata sidecar verified:
+
+- [user_note_check_2026-06-06_230000.yaml](/var/lib/neurokairos/eventlogger/recordings/user_note_check_2026-06-06_230000.yaml)
+
+Confirmed in exported YAML:
+
+- `user: "ava"`
+- multiline-safe `notes: |-`
+
+## Known caveats
+
+- This is still a single shared recorder per Pi, not a per-user session.
+- Any connected user can stop the active shared recording.
+- Start/stop operations are not yet protected by a server-side lock, so truly
+  simultaneous requests still have a race window.
+- Stop feedback is now immediate in the UI, but export is still synchronous on
+  the backend.
+
+## Suggested next work
+
+If continuing this feature set, the most valuable next steps are:
+
+1. Add a server-side lock around start/stop to close the race window.
+2. Add recorder ownership/session protection so only the starter can stop.
+3. Consider asynchronous export if stop latency itself needs to be reduced, not
+   just the visible UI dead time.
+4. If desired, add `last recording` metadata to `/v1/status` so persistent
+   stopped-state text survives a page refresh.
+
+## Files most worth opening first
 
 - `raspberry_pi/eventlogger/eventlogger_control.py`
 - `raspberry_pi/eventlogger/web/index.html`
 - `tests/test_eventlogger_control.py`
-
