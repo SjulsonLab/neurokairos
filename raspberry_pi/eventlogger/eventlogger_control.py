@@ -205,7 +205,7 @@ def iter_event_rows(root_dir: Path, start_ns: int, stop_ns: int):
     journal_dir = root_dir / "journal"
     if not journal_dir.exists():
         return
-    for path in sorted(journal_dir.glob("events_*.tsv")):
+    for path in sorted(journal_dir.glob("all_events_*.tsv")):
         with path.open("r", encoding="utf-8") as handle:
             header = handle.readline()
             if not header:

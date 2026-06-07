@@ -115,7 +115,7 @@ def test_export_recording_slices_journal_and_writes_minimal_yaml(tmp_path: Path)
     root_dir = tmp_path / "eventlogger"
     make_journal(
         root_dir,
-        "events_2026-06-06.tsv",
+        "all_events_2026-06-06.tsv",
         [
             "2026-06-06T14:57:06.200002831Z\t1\t1\tDIN1\tfalling\n",
             "2026-06-06T14:57:07.000004223Z\t2\t2\tDIN1\trising\n",
@@ -164,7 +164,7 @@ def test_export_recording_writes_multiline_notes_safely(tmp_path: Path):
     root_dir = tmp_path / "eventlogger"
     make_journal(
         root_dir,
-        "events_2026-06-06.tsv",
+        "all_events_2026-06-06.tsv",
         ["2026-06-06T14:57:07.000004223Z\t2\t2\tDIN1\trising\n"],
     )
 
@@ -197,7 +197,7 @@ def test_export_collision_only_shifts_filename(tmp_path: Path):
     (recordings_dir / "events_2026-06-06_105707.yaml").write_text("existing\n")
     make_journal(
         root_dir,
-        "events_2026-06-06.tsv",
+        "all_events_2026-06-06.tsv",
         ["2026-06-06T14:57:07.000004223Z\t2\t2\tDIN1\trising\n"],
     )
 
@@ -221,7 +221,7 @@ def test_export_tsv_drops_raw_nanosecond_columns(tmp_path: Path):
     root_dir = tmp_path / "eventlogger"
     make_journal(
         root_dir,
-        "events_2026-06-06.tsv",
+        "all_events_2026-06-06.tsv",
         [
             "2026-06-06T14:57:07.000004223Z\t123456789\t987654321\tDIN1\trising\n",
         ],
@@ -251,7 +251,7 @@ def test_recover_interrupted_recording_creates_interrupted_export(tmp_path: Path
     root_dir = tmp_path / "eventlogger"
     make_journal(
         root_dir,
-        "events_2026-06-06.tsv",
+        "all_events_2026-06-06.tsv",
         ["2026-06-06T14:57:07.000004223Z\t2\t2\tDIN1\trising\n"],
     )
     control_dir = root_dir / "control"
@@ -309,7 +309,7 @@ def test_http_server_serves_page_and_recording_workflow(tmp_path: Path):
     root_dir = tmp_path / "eventlogger"
     make_journal(
         root_dir,
-        "events_2026-06-06.tsv",
+        "all_events_2026-06-06.tsv",
         [
             "2026-06-06T14:57:07.000004223Z\t2\t2\tDIN1\trising\n",
             "2026-06-06T14:57:07.200001113Z\t3\t3\tDIN1\tfalling\n",
@@ -420,7 +420,7 @@ def test_stop_recording_uses_final_notes_value(tmp_path: Path):
     root_dir = tmp_path / "eventlogger"
     make_journal(
         root_dir,
-        "events_2026-06-06.tsv",
+        "all_events_2026-06-06.tsv",
         ["2026-06-06T14:57:07.000004223Z\t2\t2\tDIN1\trising\n"],
     )
     make_input_state(root_dir)

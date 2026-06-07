@@ -125,6 +125,13 @@
       box-shadow: 0 0 0 1px var(--accent);
     }
 
+    input:disabled {
+      background: #141b23;
+      color: #7d8996;
+      border-color: #24303c;
+      cursor: not-allowed;
+    }
+
     textarea {
       min-height: 88px;
       resize: vertical;
@@ -175,17 +182,17 @@
     }
 
     .record-core {
-      width: 12px;
-      height: 12px;
+      width: 23px;
+      height: 23px;
       border-radius: 50%;
       background: #5a1d1d;
       box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
     }
 
     .stop-icon {
-      width: 14px;
-      height: 14px;
-      border-radius: 3px;
+      width: 23px;
+      height: 23px;
+      border-radius: 4px;
       background: currentColor;
     }
 
@@ -221,8 +228,8 @@
     }
 
     .record-core.active {
-      background: #ff4f4f;
-      box-shadow: 0 0 12px rgba(255, 79, 79, 0.6);
+      background: #ff0000;
+      box-shadow: 0 0 16px rgba(255, 0, 0, 1);
       animation: blink 1s steps(1, end) infinite;
     }
 
@@ -291,14 +298,14 @@
     .input-stack {
       width: 54px;
       display: grid;
-      grid-template-rows: 18px 20px;
+      grid-template-rows: 23px 20px;
       justify-items: center;
       row-gap: 5px;
     }
 
     .indicator {
-      width: 14px;
-      height: 14px;
+      width: 23px;
+      height: 23px;
       border-radius: 50%;
       background: var(--inactive);
       box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06);
@@ -441,10 +448,12 @@
 
   <script>
     let lastRisingCounts = new Map();
+    let pulseWindowStreaks = new Map();
     let latestStatus = null;
     let lastStatusMessage = "<strong>Status:</strong> idle";
     let stopInFlight = false;
     const POLL_INTERVAL_MS = 100;
+    const UI_REFRESH_MS = 250;
 
     function formatDuration(startUtc) {
       if (!startUtc) {
@@ -482,9 +491,20 @@
       pulseContainer.innerHTML = "";
       for (const input of inputs) {
         const previousRising = lastRisingCounts.get(input.name) ?? input.rising_count;
-        const transientHigh = input.current_level === 0 && input.rising_count > previousRising;
-        const displayHigh = input.current_level === 1 || transientHigh;
+        const risingDelta = Math.max(0, Number(input.rising_count) - Number(previousRising));
+        const currentLevelHigh = input.current_level === 1;
+        let pulseWindowStreak = pulseWindowStreaks.get(input.name) ?? 0;
+        if (currentLevelHigh) {
+          pulseWindowStreak = 0;
+        } else if (risingDelta > 0) {
+          pulseWindowStreak += 1;
+        } else {
+          pulseWindowStreak = 0;
+        }
+        const transientHigh = !currentLevelHigh && risingDelta > 0 && pulseWindowStreak % 2 === 1;
+        const displayHigh = currentLevelHigh || transientHigh;
         lastRisingCounts.set(input.name, input.rising_count);
+        pulseWindowStreaks.set(input.name, pulseWindowStreak);
 
         const inputNumber = String(input.name).replace(/^DIN/i, "");
         const indicatorStack = document.createElement("div");
@@ -523,6 +543,7 @@
       startButton.disabled = active;
       stopButton.disabled = !active || stopInFlight;
       basenameInput.disabled = active;
+      userInput.disabled = active;
       if (active && !wasActive) {
         userInput.value = status.active_recording.user === "anonymous" ? "" : (status.active_recording.user ?? "");
         notesInput.value = status.active_recording.notes ?? "";
@@ -544,9 +565,16 @@
       document.getElementById("filename-line").innerHTML = active && status.active_recording.filename
         ? `<strong>Filename:</strong> ${status.active_recording.filename}`
         : "<strong>Filename:</strong> not recording";
-      document.getElementById("duration-line").innerHTML = `<strong>Duration:</strong> ${active ? formatDuration(status.active_recording.start_utc) : "00:00:00"}`;
+      renderDuration(status);
 
       renderInputs(status);
+    }
+
+    function renderDuration(status) {
+      const active = status?.active_recording?.active === true;
+      const startUtc = status?.active_recording?.start_utc;
+      document.getElementById("duration-line").innerHTML =
+        `<strong>Duration:</strong> ${active ? formatDuration(startUtc) : "00:00:00"}`;
     }
 
     async function pollStatus() {
@@ -607,10 +635,8 @@
     });
 
     setInterval(() => {
-      if (latestStatus) {
-        renderStatus(latestStatus);
-      }
-    }, POLL_INTERVAL_MS);
+      renderDuration(latestStatus);
+    }, UI_REFRESH_MS);
 
     setInterval(() => {
       pollStatus().catch((error) => {

@@ -170,7 +170,7 @@ int eventlogger_journal_write_event(eventlogger_journal_t *journal,
     }
     if (open_daily_file(&journal->event_file, journal->event_date, sizeof(journal->event_date),
                         journal->event_path, sizeof(journal->event_path),
-                        config->journal_dir, "events", date,
+                        config->journal_dir, "all_events", date,
                         "utc_time\trealtime_ns\tmonotonic_ns\tinput\tedge\n") != 0) {
         return -1;
     }

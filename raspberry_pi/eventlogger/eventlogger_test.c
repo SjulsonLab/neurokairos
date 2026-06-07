@@ -117,7 +117,7 @@ static void test_journal_header(void)
                                                  "DIN1", "rising") == 0,
                  "write event row");
     eventlogger_journal_maybe_flush(&journal, &config, 1, true);
-    snprintf(event_path, sizeof(event_path), "%s/events_2025-01-01.tsv", dir);
+    snprintf(event_path, sizeof(event_path), "%s/all_events_2025-01-01.tsv", dir);
     file = fopen(event_path, "r");
     require_true(file != NULL, "open event TSV");
     require_true(fgets(header, sizeof(header), file) != NULL, "read event TSV header");
