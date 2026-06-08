@@ -32,7 +32,7 @@ No GPS hardware is needed on the encoder Pi itself.
 | IRIG-H output (normal) | GPIO 9 | Pi → recorder |
 | IRIG-H output (inverted) | disabled | Pi → recorder (optional) |
 
-> **Warning:** Pins 0–1 (I2C HAT ID) and 14–15 (UART) are reserved. PPS wiring depends on the GPS hardware: Adafruit Ultimate GPS HATs use GPIO 4 by default, while many Waveshare GNSS HATs use GPIO 18.
+> **Warning:** Pins 0–1 (I2C HAT ID) and 14–15 (UART) are reserved. The GPS server setup now defaults to GPIO 18 for Waveshare GNSS HATs; use GPIO 4 only when you explicitly override for an Adafruit Ultimate GPS HAT.
 
 ## Step 1: Install chrony
 

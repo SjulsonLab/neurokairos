@@ -13,23 +13,72 @@
 #
 # Prerequisites:
 #   - Raspberry Pi with a GPS receiver connected to serial UART
-#   - PPS output from GPS wired to the HAT's PPS GPIO (GPIO 4 by default here; many Waveshare GNSS HATs use GPIO 18) with pps-gpio overlay enabled
+#   - PPS output from GPS wired to the HAT's PPS GPIO (GPIO 18 by default here; override to GPIO 4 for Adafruit-style HATs) with pps-gpio overlay enabled
 #   - Serial console disabled (raspi-config -> Interface -> Serial -> No console, Yes hardware)
 #
 # Usage:
-#   sudo ./install_chrony_server.sh [--serial-device /dev/ttyAMA0]
+#   sudo ./install_chrony_server.sh [--serial-device /dev/ttyAMA0] [--pps-pin 18]
 
 set -euo pipefail
 
-SERIAL_DEVICE="${1:-/dev/ttyAMA0}"
+SERIAL_DEVICE="/dev/ttyAMA0"
+PPS_PIN=18
+SERIAL_DEVICE_SET=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --serial-device)
+            if [ "$#" -lt 2 ]; then
+                echo "Error: --serial-device requires a path argument."
+                exit 1
+            fi
+            SERIAL_DEVICE="$2"
+            shift 2
+            ;;
+        --pps-pin)
+            if [ "$#" -lt 2 ]; then
+                echo "Error: --pps-pin requires a BCM GPIO pin number."
+                exit 1
+            fi
+            PPS_PIN="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "Usage: sudo $0 [--serial-device /dev/ttyAMA0] [--pps-pin 18]"
+            exit 0
+            ;;
+        *)
+            if [ "$SERIAL_DEVICE_SET" -eq 0 ] && [ "${1#-}" = "$1" ]; then
+                SERIAL_DEVICE="$1"
+                SERIAL_DEVICE_SET=1
+                shift 1
+            else
+                echo "Error: Unknown argument: $1"
+                echo "Usage: sudo $0 [--serial-device /dev/ttyAMA0] [--pps-pin 18]"
+                exit 1
+            fi
+            ;;
+    esac
+done
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Error: This script must be run as root (sudo)."
     exit 1
 fi
 
+if ! printf '%s' "$PPS_PIN" | grep -Eq '^[0-9]+$'; then
+    echo "Error: --pps-pin must be a numeric BCM GPIO pin."
+    exit 1
+fi
+
+if [ "$PPS_PIN" -lt 0 ] || [ "$PPS_PIN" -gt 27 ]; then
+    echo "Error: --pps-pin must be in the range 0-27."
+    exit 1
+fi
+
 echo "=== NeuroKairos Chrony Server Installation ==="
 echo "GPS serial device: $SERIAL_DEVICE"
+echo "GPS PPS pin: $PPS_PIN"
 
 # --- Install packages ---
 echo ""
@@ -49,16 +98,24 @@ USBAUTO="false"
 EOF
 
 # --- Enable pps-gpio device tree overlay if not already present ---
-if ! grep -q "^dtoverlay=pps-gpio" /boot/config.txt 2>/dev/null && \
-   ! grep -q "^dtoverlay=pps-gpio" /boot/firmware/config.txt 2>/dev/null; then
-    echo ""
-    echo "Adding pps-gpio overlay to boot config..."
-    # Try firmware path first (bookworm+), fall back to /boot
-    if [ -f /boot/firmware/config.txt ]; then
-        echo "dtoverlay=pps-gpio,gpiopin=4" >> /boot/firmware/config.txt
-    elif [ -f /boot/config.txt ]; then
-        echo "dtoverlay=pps-gpio,gpiopin=4" >> /boot/config.txt
+replace_or_append_pps_overlay() {
+    config_path="$1"
+    if grep -q "^dtoverlay=pps-gpio" "$config_path" 2>/dev/null; then
+        sed -i "s|^dtoverlay=pps-gpio.*|dtoverlay=pps-gpio,gpiopin=${PPS_PIN}|" "$config_path"
+    else
+        echo "dtoverlay=pps-gpio,gpiopin=${PPS_PIN}" >> "$config_path"
     fi
+}
+
+if [ -f /boot/firmware/config.txt ]; then
+    echo ""
+    echo "Updating pps-gpio overlay in boot config..."
+    replace_or_append_pps_overlay /boot/firmware/config.txt
+    echo "NOTE: A reboot is required for the PPS overlay to take effect."
+elif [ -f /boot/config.txt ]; then
+    echo ""
+    echo "Updating pps-gpio overlay in boot config..."
+    replace_or_append_pps_overlay /boot/config.txt
     echo "NOTE: A reboot is required for the PPS overlay to take effect."
 fi
 

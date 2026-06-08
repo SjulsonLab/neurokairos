@@ -17,13 +17,13 @@ Instructions for setting up a Raspberry Pi as a GPS-disciplined stratum 1 NTP se
 
 | Signal | Default BCM Pin | Direction |
 |--------|-----------------|-----------|
-| GPS PPS input | GPIO 4 on Adafruit-style HATs, GPIO 18 on many Waveshare HATs | GPS → Pi |
+| GPS PPS input | GPIO 18 by default (many Waveshare HATs), GPIO 4 for Adafruit-style HATs via `--pps-pin 4` | GPS → Pi |
 | GPS serial TX → Pi RX | GPIO 15 (UART RX) | GPS → Pi |
 | GPS serial RX ← Pi TX | GPIO 14 (UART TX) | Pi → GPS |
 | IRIG-H output (normal) | GPIO 9 | Pi → recorder |
 | IRIG-H output (inverted) | disabled | Pi → recorder (optional) |
 
-> **Warning:** Pins 0–1 (I2C HAT ID) and 14–15 (UART/GPS) are reserved. PPS wiring depends on the receiver: Adafruit Ultimate GPS HATs use GPIO 4 by default, while many Waveshare GNSS HATs use GPIO 18.
+> **Warning:** Pins 0–1 (I2C HAT ID) and 14–15 (UART/GPS) are reserved. The GPS server setup now defaults to GPIO 18; use GPIO 4 only when you explicitly override for an Adafruit Ultimate GPS HAT.
 
 ## RPi OS Configuration
 
@@ -50,7 +50,7 @@ sudo ./install_chrony_server.sh
 This script:
 - Installs `chrony`, `gpsd`, and `pps-tools`
 - Configures gpsd to use `/dev/ttyAMA0` (override with `--serial-device /dev/ttyXXX`)
-- Enables the `pps-gpio` device tree overlay on the PPS GPIO for the selected hardware (GPIO 4 by default in this script; many Waveshare HATs use GPIO 18 instead)
+- Enables the `pps-gpio` device tree overlay on the PPS GPIO for the selected hardware (GPIO 18 by default; override with `--pps-pin 4` for Adafruit-style HATs)
 - Configures chrony with:
   - SHM refclock from gpsd (stratum 1, offset 0.5 s for NMEA latency)
   - PPS refclock from `/dev/pps0` (stratum 1, lock to SHM)
@@ -99,7 +99,7 @@ Then proceed with the rest of the [main setup guide](setup-guide.md#step-3-insta
 
 ### No PPS pulses
 
-- Verify the PPS wire is connected to the GPIO expected by your HAT (GPIO 4 for Adafruit Ultimate GPS HATs, GPIO 18 for many Waveshare GNSS HATs)
+- Verify the PPS wire is connected to the GPIO expected by your HAT (GPIO 18 by default, or GPIO 4 when you passed `--pps-pin 4` for an Adafruit Ultimate GPS HAT)
 - Check the overlay is loaded: `dmesg | grep pps`
 - Verify the device exists: `ls /dev/pps0`
 - If `/dev/pps0` is missing, the reboot after `install_chrony_server.sh` may not have happened

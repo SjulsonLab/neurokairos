@@ -5,7 +5,7 @@ Two pre-built Raspberry Pi OS Lite (arm64) images, produced with [pi-gen]:
 | Image                     | Use it when…                                                                                       |
 | ------------------------- | -------------------------------------------------------------------------------------------------- |
 | **`neurokairos-sender`**  | The Pi gets its time from an external NTP server (commercial GPS-NTP appliance, LAN NTP, pool).    |
-| **`neurokairos-server`**  | A GPS receiver is wired to the Pi's UART + PPS GPIO; the Pi serves stratum-1 NTP on its network. Use the PPS pin required by your HAT (GPIO 4 on Adafruit-style GPS HATs, GPIO 18 on many Waveshare GNSS HATs).   |
+| **`neurokairos-server`**  | A GPS receiver is wired to the Pi's UART + PPS GPIO; the Pi serves stratum-1 NTP on its network. The server image defaults to GPIO 18 for Waveshare-style HATs; use GPIO 4 only if you override the PPS pin for an Adafruit-style HAT.   |
 
 Both images contain `irig_sender` running as a systemd service from boot, with `chrony` providing the system clock. Pin configuration (BCM GPIO 9 normal output, inverted disabled) matches the defaults in `raspberry_pi/sender/irig_sender.c`; change it with `raspberry_pi/scripts/install.sh -p <pin>` after boot.
 
@@ -29,7 +29,7 @@ Both images contain `irig_sender` running as a systemd service from boot, with `
 
 ### Server image — first-boot checklist
 
-- Wire the GPS receiver: NMEA → UART (`/dev/ttyAMA0`), PPS → the GPIO required by your HAT (GPIO 4 on Adafruit-style GPS HATs, GPIO 18 on many Waveshare GNSS HATs), ground common.
+- Wire the GPS receiver: NMEA → UART (`/dev/ttyAMA0`), PPS → GPIO 18 by default or GPIO 4 if you intentionally override for an Adafruit-style GPS HAT, ground common.
 - `ppstest /dev/pps0` should print a `1 Hz` source.
 - `chronyc sources` should show both `#? GPS` and `#* PPS`; `chronyc tracking` should report stratum 1 within a few minutes of GPS lock.
 - `gpspipe -w` (one of `gpsd-clients`) shows live NMEA if the receiver is talking.
