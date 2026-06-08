@@ -2,6 +2,10 @@
 chip = gpiochip0
 journal_dir = /var/lib/neurokairos/eventlogger/journal
 
+# The default DIN mapping matches the Raspberry Pi board layout:
+# DIN1=BCM 5, DIN2=BCM 6, DIN3=BCM 13, DIN4=BCM 19,
+# DIN5=BCM 26, DIN6=BCM 16, DIN7=BCM 20, DIN8=BCM 21.
+
 # Journals rotate daily by UTC date. Event rows are batch-flushed when either
 # threshold is reached, keeping disk I/O low while bounding data loss on crash.
 flush_interval_ms = 1000
@@ -28,25 +32,25 @@ gpio = 6
 enabled = true
 
 [input DIN3]
-gpio = 10
-enabled = true
-
-[input DIN4]
-gpio = 11
-enabled = true
-
-[input DIN5]
-gpio = 12
-enabled = true
-
-[input DIN6]
 gpio = 13
 enabled = true
 
-[input DIN7]
+[input DIN4]
+gpio = 19
+enabled = true
+
+[input DIN5]
+gpio = 26
+enabled = true
+
+[input DIN6]
 gpio = 16
 enabled = true
 
+[input DIN7]
+gpio = 20
+enabled = true
+
 [input DIN8]
-gpio = 17
+gpio = 21
 enabled = true

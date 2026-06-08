@@ -1177,9 +1177,9 @@ int validate_gpio_pin(int pin, const char *label) {
         return -1;
     }
 
-    // BCM 4: commonly used for GPS PPS input — warn but allow
+    // BCM 4: commonly used for Adafruit-style GPS HAT PPS input — warn but allow
     if (pin == 4) {
-        printf("Warning: BCM GPIO 4 is commonly used for GPS PPS input; using it for IRIG output may conflict with clock disciplining.\n");
+        printf("Warning: BCM GPIO 4 is commonly used for PPS on Adafruit-style GPS HATs; many Waveshare GNSS HATs use GPIO 18 instead. Using GPIO 4 for IRIG output may conflict with clock disciplining.\n");
     }
 
     return 0;

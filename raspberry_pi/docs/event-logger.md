@@ -18,12 +18,16 @@ The default config enables eight inputs:
 
 - `DIN1` -> BCM 5
 - `DIN2` -> BCM 6
-- `DIN3` -> BCM 10
-- `DIN4` -> BCM 11
-- `DIN5` -> BCM 12
-- `DIN6` -> BCM 13
-- `DIN7` -> BCM 16
-- `DIN8` -> BCM 17
+- `DIN3` -> BCM 13
+- `DIN4` -> BCM 19
+- `DIN5` -> BCM 26
+- `DIN6` -> BCM 16
+- `DIN7` -> BCM 20
+- `DIN8` -> BCM 21
+
+This order matches the physical DIN layout on the Raspberry Pi header, so the
+inputs read left-to-right on the board rather than following the older default
+GPIO numbering.
 
 Those are Broadcom (BCM) pin numbers, not physical pin numbers. The default deadtime is `1 ms`, meaning that multiple events within a 1 ms window are treated as a single event. This is used to "debounce" transients that can occur when a pin changes state. Also, note that the Raspberry Pi's GPIO pins expect 3.3 V inputs; you will need to use a logic level shifter for 5 V TTL inputs (in almost all cases, a simple voltage divider will suffice). 
 

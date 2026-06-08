@@ -60,7 +60,18 @@ the logs can be copied from another computer on the network.
 ## Current Test Setup
 
 For the initial Raspberry Pi 5 test setup, the event logger is configured to use
-BCM GPIO 5 as `DIN1`. The IRIG sender uses BCM GPIO 9 by default.
+the board-layout DIN mapping:
+
+- `DIN1` -> BCM 5
+- `DIN2` -> BCM 6
+- `DIN3` -> BCM 13
+- `DIN4` -> BCM 19
+- `DIN5` -> BCM 26
+- `DIN6` -> BCM 16
+- `DIN7` -> BCM 20
+- `DIN8` -> BCM 21
+
+The IRIG sender uses BCM GPIO 9 by default.
 
 To test the event logger directly from the IRIG sender, connect a jumper from:
 
