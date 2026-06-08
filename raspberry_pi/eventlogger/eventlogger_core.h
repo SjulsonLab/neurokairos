@@ -69,7 +69,8 @@ typedef struct {
  * Inputs: config points to writable storage for one eventlogger_config_t.
  * Shapes/units: scalar structure; time fields use ms or s as named.
  * Returns: none. The structure is filled with safe defaults for eight GPIO
- * inputs: BCM 5, 6, 10, 11, 12, 13, 16, and 17.
+ * inputs arranged to match the Raspberry Pi board layout: BCM 5, 6, 13, 19,
+ * 26, 16, 20, and 21.
  */
 void eventlogger_config_init(eventlogger_config_t *config);
 

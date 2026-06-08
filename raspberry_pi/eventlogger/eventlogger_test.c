@@ -29,7 +29,13 @@ static void test_defaults(void)
     require_true(config.cleanup_target_gb == 8.0, "default cleanup target");
     require_true(config.input_count == 8, "default input count");
     require_true(config.inputs[0].gpio == 5, "default DIN1 GPIO");
-    require_true(config.inputs[7].gpio == 17, "default DIN8 GPIO");
+    require_true(config.inputs[1].gpio == 6, "default DIN2 GPIO");
+    require_true(config.inputs[2].gpio == 13, "default DIN3 GPIO");
+    require_true(config.inputs[3].gpio == 19, "default DIN4 GPIO");
+    require_true(config.inputs[4].gpio == 26, "default DIN5 GPIO");
+    require_true(config.inputs[5].gpio == 16, "default DIN6 GPIO");
+    require_true(config.inputs[6].gpio == 20, "default DIN7 GPIO");
+    require_true(config.inputs[7].gpio == 21, "default DIN8 GPIO");
 }
 
 static void test_deadtime(void)

@@ -65,7 +65,8 @@ static eventlogger_input_t *find_or_add_input(eventlogger_config_t *config, cons
 
 void eventlogger_config_init(eventlogger_config_t *config)
 {
-    static const int default_gpios[] = {5, 6, 10, 11, 12, 13, 16, 17};
+    /* Default DIN layout follows the Raspberry Pi header's board layout. */
+    static const int default_gpios[] = {5, 6, 13, 19, 26, 16, 20, 21};
     int i;
 
     memset(config, 0, sizeof(*config));

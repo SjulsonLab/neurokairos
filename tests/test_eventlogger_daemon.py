@@ -31,8 +31,15 @@ def test_default_config_uses_expected_paths_and_pins():
     assert "flush_event_count = 1000" in config
     assert "deadtime_ms = 1" in config
 
-    for gpio in (5, 6, 10, 11, 12, 13, 16, 17):
+    for gpio in (5, 6, 13, 19, 26, 16, 20, 21):
         assert f"gpio = {gpio}" in config
+
+
+def test_eventlogger_core_defaults_match_physical_layout():
+    source = read_text("raspberry_pi/eventlogger/eventlogger_config.c")
+
+    assert "{5, 6, 13, 19, 26, 16, 20, 21}" in source
+    assert "physical layout" in source.lower() or "board" in source.lower()
 
 
 def test_event_tsv_schema_has_no_sequence_column():

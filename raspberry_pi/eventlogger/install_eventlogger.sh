@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Install the NeuroKairos TTL event logger as a standalone systemd service.
-# The default config logs BCM GPIO 5, 6, 10, 11, 12, 13, 16, and 17.
+# The default config logs BCM GPIO 5, 6, 13, 19, 26, 16, 20, and 21 to match the Pi header layout.
 
 set -e
 
