@@ -55,7 +55,7 @@ The fastest path is to flash a pre-built image. If you'd rather configure a stoc
 Two images are published on the [Releases page]:
 
 - **`neurokairos-sender-*.img.xz`** — `irig_sender` + chrony as an NTP **client**. Use when an external NTP server (e.g., a commercial GPS-NTP appliance) provides time on your network. No GPS hardware on the Pi.
-- **`neurokairos-server-*.img.xz`** — `irig_sender` + chrony as a GPS-disciplined **stratum-1 NTP server** + gpsd + PPS overlay. Use when you have a GPS timing receiver wired to the Pi's UART and PPS to GPIO 4.
+- **`neurokairos-server-*.img.xz`** — `irig_sender` + chrony as a GPS-disciplined **stratum-1 NTP server** + gpsd + PPS overlay. Use when you have a GPS timing receiver wired to the Pi's UART and the PPS line on the pin required by your HAT: GPIO 4 for Adafruit-style GPS HATs, GPIO 18 for many Waveshare GNSS HATs.
 
 Flash with [Raspberry Pi Imager], then before unmounting the FAT `bootfs` partition drop two files on it:
 

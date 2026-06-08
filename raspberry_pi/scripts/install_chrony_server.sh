@@ -13,7 +13,7 @@
 #
 # Prerequisites:
 #   - Raspberry Pi with a GPS receiver connected to serial UART
-#   - PPS output from GPS wired to GPIO 4 (default) with pps-gpio overlay enabled
+#   - PPS output from GPS wired to the HAT's PPS GPIO (GPIO 4 by default here; many Waveshare GNSS HATs use GPIO 18) with pps-gpio overlay enabled
 #   - Serial console disabled (raspi-config -> Interface -> Serial -> No console, Yes hardware)
 #
 # Usage:

@@ -16,7 +16,7 @@ fi
 cat >> "${CONFIG_TXT}" <<'EOF'
 
 # --- NeuroKairos GPS / PPS configuration ---
-# PPS pulse from GPS receiver wired to GPIO 4
+# PPS pulse from GPS receiver wired to the HAT's PPS GPIO (GPIO 4 on Adafruit-style GPS HATs; GPIO 18 on many Waveshare GNSS HATs)
 dtoverlay=pps-gpio,gpiopin=4
 # Enable the primary UART (/dev/ttyAMA0) for the GPS NMEA stream
 enable_uart=1
