@@ -33,7 +33,6 @@ def _load_base_module() -> Any:
 
 _base = _load_base_module()
 
-socket = _base.socket
 DEFAULT_TARGET_HOST = _base.DEFAULT_TARGET_HOST
 DEFAULT_TARGET_PORT = _base.DEFAULT_TARGET_PORT
 DEFAULT_CHRONYC_BINARY = _base.DEFAULT_CHRONYC_BINARY
@@ -41,13 +40,9 @@ DEFAULT_TIMEOUT_S = _base.DEFAULT_TIMEOUT_S
 CSV_HEADER = _base.CSV_HEADER
 utc_now = _base.utc_now
 iso_utc = _base.iso_utc
-_parse_float_field = _base._parse_float_field
 parse_chronyc_tracking = _base.parse_chronyc_tracking
 run_chronyc_tracking = _base.run_chronyc_tracking
-_ntp_timestamp_to_unix = _base._ntp_timestamp_to_unix
-_unix_to_ntp_timestamp = _base._unix_to_ntp_timestamp
-_decode_reference_id = _base._decode_reference_id
-_decode_li_vn_mode = _base._decode_li_vn_mode
+run_chronyc_sourcestats = _base.run_chronyc_sourcestats
 query_tm2000b_ntp = _base.query_tm2000b_ntp
 build_record = _base.build_record
 append_tsv_row = _base.append_tsv_row
@@ -79,6 +74,10 @@ def run(config: argparse.Namespace) -> dict[str, Any]:
         chronyc_binary=config.chronyc_binary,
         timeout_s=config.timeout_s,
     )
+    chrony_sourcestats = run_chronyc_sourcestats(
+        chronyc_binary=config.chronyc_binary,
+        timeout_s=config.timeout_s,
+    )
     tm2000b_query = query_tm2000b_ntp(
         host=config.tm2000b_host,
         port=config.tm2000b_port,
@@ -88,6 +87,7 @@ def run(config: argparse.Namespace) -> dict[str, Any]:
         timestamp_utc=timestamp_utc,
         chrony_tracking=chrony_tracking,
         tm2000b_query=tm2000b_query,
+        chrony_sourcestats=chrony_sourcestats,
     )
     output_path = _output_path(config.output_dir, timestamp_utc)
     append_tsv_row(output_path, CSV_HEADER, record)
