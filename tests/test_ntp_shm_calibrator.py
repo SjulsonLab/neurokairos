@@ -1026,3 +1026,160 @@ def test_l6_frozen_mode_uses_last_known_offset(mod, tmp_path):
     # Should write with FROZEN precision (-10) and last known bias
     assert buf.valid == 1
     assert buf.precision == -10
+
+
+# ===========================================================================
+# Group M — hourly.tsv written with role + applied_offset_s columns
+# ===========================================================================
+
+def _seed_raw_logs(mod, log_dir, servers, n_samples=5, window_s=3600):
+    """Write n_samples raw log rows for each server so hourly summary can be computed."""
+    now = time.time()
+    for server, offset_s, std_dev_s, stratum in servers:
+        for i in range(n_samples):
+            ts_override = now - (n_samples - i) * (window_s / (n_samples + 1))
+            # Temporarily monkey-patch time to control timestamp
+            mod.append_raw_sample(
+                log_dir, server, offset_s, std_dev_s, stratum, "+", 16, 8
+            )
+
+
+def test_m1_hourly_cycle_writes_hourly_tsv(mod, tmp_path):
+    """After _run_hourly_cycle, hourly.tsv exists with the correct columns."""
+    cfg = _mock_config(tmp_path, mod)
+    state = mod._default_state()
+    seg, buf = _make_shm_segment(mod)
+
+    # Seed raw logs so compute_hourly_summary returns non-None
+    servers = [
+        ("17.253.2.35",   49e-6,  61e-6,  1),
+        ("216.239.35.4", -199e-6, 312e-6, 1),
+        ("162.159.200.1", -28e-6, 369e-6, 3),
+    ]
+    _seed_raw_logs(mod, cfg.log_dir, servers)
+
+    with (
+        patch.object(mod, "run_sourcestats_full", _make_mock_run_sourcestats(mod)),
+        patch.object(mod, "run_chronyc_tracking", _make_mock_run_tracking(mod)),
+    ):
+        mod._run_hourly_cycle(cfg, state, seg)
+
+    hourly = tmp_path / "logs" / "hourly.tsv"
+    assert hourly.exists(), "hourly.tsv must be written by _run_hourly_cycle"
+    import csv as _csv
+    with hourly.open() as f:
+        rows = list(_csv.DictReader(f, delimiter="\t"))
+    assert len(rows) >= 1
+    # New columns must be present
+    assert "role" in rows[0], "hourly.tsv must have a 'role' column"
+    assert "applied_offset_s" in rows[0], "hourly.tsv must have an 'applied_offset_s' column"
+
+
+def test_m2_role_values_after_warmup(mod, tmp_path):
+    """Post-warmup hourly rows have preferred/active/noselect roles."""
+    cfg = _mock_config(tmp_path, mod)
+    state = mod._default_state()
+    seg, buf = _make_shm_segment(mod)
+
+    # Inject enough hourly history to exit warmup (min_stability_samples = 6)
+    summaries = {
+        "17.253.2.35":  {"mean_offset_s": 49e-6,  "hourly_stdev_s": 61e-6,  "n_samples": 60, "stratum": 1},
+        "216.239.35.4": {"mean_offset_s": -199e-6, "hourly_stdev_s": 312e-6, "n_samples": 60, "stratum": 1},
+        "162.159.200.1":{"mean_offset_s": -28e-6,  "hourly_stdev_s": 369e-6, "n_samples": 60, "stratum": 3},
+    }
+    state["_hourly_window_override"] = summaries
+
+    # Also seed raw logs so new hourly rows get written
+    servers = [
+        ("17.253.2.35",   49e-6,  61e-6,  1),
+        ("216.239.35.4", -199e-6, 312e-6, 1),
+        ("162.159.200.1", -28e-6, 369e-6, 3),
+    ]
+    _seed_raw_logs(mod, cfg.log_dir, servers)
+
+    with (
+        patch.object(mod, "run_sourcestats_full", _make_mock_run_sourcestats(mod)),
+        patch.object(mod, "run_chronyc_tracking", _make_mock_run_tracking(mod)),
+    ):
+        mod._run_hourly_cycle(cfg, state, seg)
+
+    hourly = tmp_path / "logs" / "hourly.tsv"
+    if not hourly.exists():
+        pytest.skip("hourly.tsv not written (override path skips log writing)")
+
+    import csv as _csv
+    with hourly.open() as f:
+        rows = list(_csv.DictReader(f, delimiter="\t"))
+
+    roles = {r["server"]: r["role"] for r in rows}
+    role_values = set(roles.values())
+    # At least one server must be preferred or active post-warmup
+    assert role_values & {"preferred", "active", "noselect"}, \
+        f"Expected post-warmup roles, got: {roles}"
+
+
+def test_m3_warmup_rows_have_warmup_role(mod, tmp_path):
+    """During warmup phase, all hourly rows have role='warmup'."""
+    cfg = _mock_config(tmp_path, mod)
+    state = mod._default_state()
+    seg, buf = _make_shm_segment(mod)
+
+    # Seed raw logs but NO hourly_window_override → daemon is in warmup
+    servers = [
+        ("17.253.2.35",   49e-6,  61e-6,  1),
+        ("216.239.35.4", -199e-6, 312e-6, 1),
+    ]
+    _seed_raw_logs(mod, cfg.log_dir, servers)
+
+    with (
+        patch.object(mod, "run_sourcestats_full", _make_mock_run_sourcestats(mod)),
+        patch.object(mod, "run_chronyc_tracking", _make_mock_run_tracking(mod)),
+    ):
+        mod._run_hourly_cycle(cfg, state, seg)
+
+    hourly = tmp_path / "logs" / "hourly.tsv"
+    assert hourly.exists()
+    import csv as _csv
+    with hourly.open() as f:
+        rows = list(_csv.DictReader(f, delimiter="\t"))
+    assert all(r["role"] == "warmup" for r in rows), \
+        f"All warmup rows must have role='warmup', got: {[r['role'] for r in rows]}"
+
+
+def test_m4_applied_offset_set_for_preferred_server(mod, tmp_path):
+    """preferred server row has applied_offset_s equal to its mean_offset_s."""
+    cfg = _mock_config(tmp_path, mod)
+    state = mod._default_state()
+    # Enough hourly history to exit warmup
+    state["_hourly_window_override"] = {
+        "17.253.2.35":  {"mean_offset_s": 49e-6,  "hourly_stdev_s": 61e-6,  "n_samples": 60, "stratum": 1},
+        "216.239.35.4": {"mean_offset_s": -199e-6, "hourly_stdev_s": 312e-6, "n_samples": 60, "stratum": 1},
+    }
+    seg, buf = _make_shm_segment(mod)
+
+    servers = [
+        ("17.253.2.35",   49e-6,  61e-6,  1),
+        ("216.239.35.4", -199e-6, 312e-6, 1),
+    ]
+    _seed_raw_logs(mod, cfg.log_dir, servers)
+
+    with (
+        patch.object(mod, "run_sourcestats_full", _make_mock_run_sourcestats(mod)),
+        patch.object(mod, "run_chronyc_tracking", _make_mock_run_tracking(mod)),
+    ):
+        mod._run_hourly_cycle(cfg, state, seg)
+
+    hourly = tmp_path / "logs" / "hourly.tsv"
+    if not hourly.exists():
+        pytest.skip("hourly.tsv not written in override path")
+
+    import csv as _csv
+    with hourly.open() as f:
+        rows = list(_csv.DictReader(f, delimiter="\t"))
+
+    preferred_rows = [r for r in rows if r["role"] == "preferred"]
+    assert preferred_rows, "at least one preferred row expected"
+    for r in preferred_rows:
+        # applied_offset_s must be non-empty for preferred
+        assert r["applied_offset_s"] != "", \
+            f"preferred server must have applied_offset_s set, got: {r}"

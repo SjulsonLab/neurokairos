@@ -59,7 +59,7 @@ DEFAULT_CHRONYC = "chronyc"
 DEFAULT_CHRONYC_TIMEOUT_S = 5.0
 DEFAULT_RAW_LOG_RETENTION_H = 72
 DEFAULT_HOURLY_LOG_RETENTION_H = 72
-DEFAULT_MIN_STABILITY_SAMPLES = 12
+DEFAULT_MIN_STABILITY_SAMPLES = 6
 DEFAULT_CV_THRESHOLD = 0.3
 DEFAULT_OVERRIDE_THRESHOLD = 0.20
 DEFAULT_ACTIVE_POOL_SIZE = 3
@@ -79,7 +79,7 @@ RAW_LOG_HEADER = [
 ]
 HOURLY_LOG_HEADER = [
     "timestamp_utc", "server", "mean_offset_s", "hourly_stdev_s",
-    "n_samples", "stratum", "tier",
+    "n_samples", "stratum", "tier", "role", "applied_offset_s",
 ]
 
 DEFAULT_INITIAL_SERVERS = [
@@ -548,8 +548,15 @@ def append_hourly_summary(
     server: str,
     summary: Dict[str, Any],
     tier: int,
+    role: str = "warmup",
+    applied_offset_s: Optional[float] = None,
 ) -> None:
-    """Append one hourly summary row."""
+    """Append one hourly summary row.
+
+    role: 'preferred', 'active', 'noselect', or 'warmup'
+    applied_offset_s: the offset term written to chrony.conf for this server
+                      (None for noselect/warmup servers)
+    """
     _ensure_dir(log_dir)
     path = log_dir / "hourly.tsv"
     write_header = not path.exists()
@@ -564,6 +571,8 @@ def append_hourly_summary(
             summary["n_samples"],
             summary.get("stratum", ""),
             tier,
+            role,
+            f"{applied_offset_s:.9f}" if applied_offset_s is not None else "",
         ])
 
 
@@ -1038,11 +1047,34 @@ def _run_raw_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
     state["_last_mode"] = mode
 
 
+def _servers_in_raw_logs(log_dir: Path, window_s: float) -> set:
+    """Return server names seen in raw logs within the last window_s seconds."""
+    cutoff = time.time() - window_s
+    servers: set = set()
+    for p in sorted(log_dir.glob("raw_*.tsv")):
+        try:
+            with p.open(newline="") as f:
+                reader = csv.DictReader(f, delimiter="\t")
+                for row in reader:
+                    try:
+                        ts = datetime.fromisoformat(
+                            row["timestamp_utc"].replace("Z", "+00:00")
+                        ).timestamp()
+                        if ts >= cutoff:
+                            servers.add(row["server"])
+                    except (ValueError, KeyError):
+                        continue
+        except OSError:
+            continue
+    return servers
+
+
 def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
     """Hourly aggregation cycle.
 
-    Computes summaries, selects best server, calibrates offset, writes SHM
-    and chrony.conf, writes status JSON.
+    Computes summaries from raw logs, writes them to hourly.tsv (with
+    role + applied_offset_s once server selection is known), then updates
+    SHM, chrony.conf, and status JSON.
     """
     tracking = run_chronyc_tracking(
         chronyc_binary=cfg.chronyc_binary,
@@ -1050,7 +1082,7 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
     )
     mode = detect_mode(tracking, state, cfg.truth_refids, cfg.truth_ips)
 
-    # Use injected hourly window if present (for testing)
+    # Use injected hourly window if present (for testing without raw log files)
     if "_hourly_window_override" in state:
         hourly_window = {
             server: [
@@ -1065,17 +1097,31 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
             ] * cfg.min_stability_samples  # enough to pass stability gate
             for server, s in state["_hourly_window_override"].items()
         }
+        new_summaries: Dict[str, Any] = {}  # don't write log in override mode
     else:
-        try:
-            run_sourcestats_full(
-                chronyc_binary=cfg.chronyc_binary,
-                timeout_s=cfg.chronyc_timeout_s,
-            )
-        except RuntimeError:
-            pass
+        # Step 1: compute new hourly summaries from raw logs (in memory)
+        new_summaries = {}
+        for server in _servers_in_raw_logs(cfg.log_dir, cfg.hourly_window_s):
+            samples = load_raw_samples(cfg.log_dir, server, cfg.hourly_window_s)
+            summary = compute_hourly_summary(samples, cfg.hourly_window_s)
+            if summary is not None:
+                new_summaries[server] = summary
 
-        hourly_window = load_hourly_window(cfg.log_dir, cfg.hourly_log_retention_h)
-        rotate_hourly_log(cfg.log_dir, cfg.hourly_log_retention_h)
+        # Step 2: load existing 72h window and merge new entries (in memory)
+        existing = load_hourly_window(cfg.log_dir, cfg.hourly_log_retention_h)
+        hourly_window = dict(existing)
+        for server, summary in new_summaries.items():
+            tier = 2 if server in getattr(cfg, "truth_ips", frozenset()) else 3
+            entry = {
+                "timestamp_s": time.time(),
+                "mean_offset_s": summary["mean_offset_s"],
+                "hourly_stdev_s": summary["hourly_stdev_s"],
+                "n_samples": summary["n_samples"],
+                "stratum": summary.get("stratum"),
+                "tier": tier,
+            }
+            hourly_window.setdefault(server, []).append(entry)
+
         rotate_raw_logs(cfg.log_dir, cfg.raw_log_retention_h)
 
     current_sourcestats = state.get("_last_sourcestats", {})
@@ -1094,6 +1140,31 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
         override_threshold=cfg.override_threshold,
         min_stability_samples=cfg.min_stability_samples,
     )
+
+    # --- Write new hourly rows now that roles are known ---
+    if new_summaries:
+        in_warmup_for_log = all(
+            len(hourly_window.get(srv, [])) < cfg.min_stability_samples
+            for srv in new_summaries
+        )
+        role_map: Dict[str, tuple] = {}
+        if not in_warmup_for_log:
+            if preferred:
+                role_map[preferred["name"]] = ("preferred", preferred.get("mean_offset_s"))
+            for s in active:
+                role_map[s["name"]] = ("active", s.get("mean_offset_s"))
+            for s in noselect:
+                role_map[s["name"]] = ("noselect", None)
+
+        for server, summary in new_summaries.items():
+            tier = 2 if server in getattr(cfg, "truth_ips", frozenset()) else 3
+            if in_warmup_for_log:
+                role, applied = "warmup", None
+            else:
+                role, applied = role_map.get(server, ("noselect", None))
+            append_hourly_summary(cfg.log_dir, server, summary, tier, role, applied)
+
+        rotate_hourly_log(cfg.log_dir, cfg.hourly_log_retention_h)
 
     # --- Compute bias for SHM ---
     bias_s: Optional[float] = None
