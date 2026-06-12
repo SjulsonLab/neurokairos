@@ -15,7 +15,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DAEMON_SRC="${SCRIPT_DIR}/ntp_shm_calibrator.py"
 DAEMON_DST="/usr/local/sbin/ntp_shm_calibrator.py"
-SERVICE_SRC="${SCRIPT_DIR}/../systemd/ntp-shm-calibrator.service"
+# Service file: look next to this script first, then in the sibling systemd/ dir
+if [[ -f "${SCRIPT_DIR}/ntp-shm-calibrator.service" ]]; then
+    SERVICE_SRC="${SCRIPT_DIR}/ntp-shm-calibrator.service"
+else
+    SERVICE_SRC="${SCRIPT_DIR}/../systemd/ntp-shm-calibrator.service"
+fi
 SERVICE_DST="/etc/systemd/system/ntp-shm-calibrator.service"
 CHRONY_CONF="/etc/chrony/chrony.conf"
 LOG_DIR="/var/log/ntp-calibrator"
