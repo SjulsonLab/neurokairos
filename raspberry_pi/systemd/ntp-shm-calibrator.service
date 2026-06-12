@@ -1,0 +1,18 @@
+[Unit]
+Description=NTP SHM offset calibration daemon
+Documentation=https://github.com/SjulsonLab/neurokairos
+After=chrony.service network-online.target
+Wants=network-online.target
+BindsTo=chrony.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 /usr/local/sbin/ntp_shm_calibrator.py
+Restart=on-failure
+RestartSec=15s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

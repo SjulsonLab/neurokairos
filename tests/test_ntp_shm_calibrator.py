@@ -360,9 +360,13 @@ def _unstable_server(name, stratum, mean_stdev_s):
 
 
 def test_e1_preferred_is_lowest_stratum_stable(mod):
-    """Preferred server is the lowest-stratum stable server."""
+    """Preferred server is the lowest-stratum stable server.
+
+    s1 is only 15% better stdev than s2 (below the 20% override threshold),
+    so s2 wins on stratum despite having a slightly worse stdev.
+    """
     servers = [
-        _stable_server("s1", stratum=2, mean_stdev_s=100e-6),
+        _stable_server("s1", stratum=2, mean_stdev_s=170e-6),  # 15% better than s2, below 20% threshold
         _stable_server("s2", stratum=1, mean_stdev_s=200e-6),
         _stable_server("s3", stratum=3, mean_stdev_s=50e-6),
     ]
@@ -716,8 +720,12 @@ def test_i3_clock_timestamp_sec_and_nsec_correct(mod):
     clock_s = 1_700_000_000.123456789
     seg.write_time(clock_time_s=clock_s, receive_time_s=clock_s + 0.001, precision=-20)
     assert buf.clockTimeStampSec == 1_700_000_000
-    # NSec: fractional part * 1e9, allow ±1 ns rounding
-    expected_ns = int(0.123456789 * 1e9)
+    # NSec must match the fractional part of the float64 clock_s value.
+    # float64 at ~1.7e9 has ~238 ns resolution, so expected_ns must be derived
+    # from the same float64 representation (not the source literal) to avoid
+    # a ~73 ns discrepancy.
+    clock_frac = clock_s - int(clock_s)
+    expected_ns = int(clock_frac * 1_000_000_000)
     assert abs(buf.clockTimeStampNSec - expected_ns) <= 1
 
 
