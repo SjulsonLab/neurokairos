@@ -157,6 +157,19 @@ def test_a7_zero_np_handled(mod):
     assert result["10.0.0.2"]["np"] == 0
 
 
+def test_a8_refclock_entries_excluded(mod):
+    """Refclock sources (mode char '#') are excluded from parse_sourcestats_full.
+
+    WANC is our own SHM output — it must not appear in the server list or it
+    could be ranked as a preferred server, creating a feedback loop.
+    """
+    sources = SAMPLE_SOURCES + "#? WANC                          0   4     0     -     +0ns[   +0ns] +/-    0ns\n"
+    stats = SAMPLE_SOURCESTATS + "WANC                        0   0    0s   +0.000     0.000     +0ns    0ns\n"
+    result = mod.parse_sourcestats_full(sources, stats)
+    assert "WANC" not in result, "Refclock WANC must be excluded from parsed server list"
+    assert "17.253.2.35" in result, "Regular NTP servers must still be parsed"
+
+
 # ===========================================================================
 # Group B — detect_mode
 # ===========================================================================
@@ -857,6 +870,25 @@ def test_k3_noselect_servers_list_present(mod, tmp_path):
     data = json.loads(path.read_text())
     assert len(data["noselect_servers"]) == 1
     assert data["noselect_servers"][0]["name"] == "time.windows.com"
+
+
+def test_k3b_stable_field_false_when_cv_above_threshold(mod, tmp_path):
+    """stable=False when a server's cv_stdev exceeds the cv_threshold.
+
+    Tests _server_info_for_ui directly — the bug was that stable was set to
+    (cv_stdev is not None) rather than (cv_stdev < cv_threshold).
+    """
+    summary = _stable_server("bad.ntp.org", stratum=1, mean_stdev_s=200e-6)
+    summary["cv_stdev"] = 1.5   # above DEFAULT_CV_THRESHOLD (1.0)
+    info = mod._server_info_for_ui(summary, cv_threshold=mod.DEFAULT_CV_THRESHOLD)
+    assert info["stable"] is False, (
+        f"stable must be False when cv_stdev={summary['cv_stdev']} > threshold={mod.DEFAULT_CV_THRESHOLD}"
+    )
+
+    summary2 = _stable_server("good.ntp.org", stratum=1, mean_stdev_s=100e-6)
+    summary2["cv_stdev"] = 0.5  # below threshold
+    info2 = mod._server_info_for_ui(summary2, cv_threshold=mod.DEFAULT_CV_THRESHOLD)
+    assert info2["stable"] is True
 
 
 def test_k4_calibration_basis_reflects_mode(mod, tmp_path):

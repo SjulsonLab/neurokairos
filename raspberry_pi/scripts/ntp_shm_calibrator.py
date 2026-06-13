@@ -60,7 +60,7 @@ DEFAULT_CHRONYC_TIMEOUT_S = 5.0
 DEFAULT_RAW_LOG_RETENTION_H = 72
 DEFAULT_HOURLY_LOG_RETENTION_H = 72
 DEFAULT_MIN_STABILITY_SAMPLES = 6
-DEFAULT_CV_THRESHOLD = 0.3
+DEFAULT_CV_THRESHOLD = 1.0
 DEFAULT_OVERRIDE_THRESHOLD = 0.20
 DEFAULT_ACTIVE_POOL_SIZE = 3
 ACTIVE_MINPOLL = 6
@@ -281,9 +281,11 @@ def parse_sourcestats_full(
         parts = stripped.split()
         if len(parts) < 3:
             continue
-        state_field = parts[0]   # e.g., "^*"
+        state_field = parts[0]   # e.g., "^*" for NTP, "#?" for refclock
         if len(state_field) < 2:
             continue
+        if state_field[0] == "#":
+            continue   # skip local refclocks (SHM, PPS, etc.)
         ip = parts[1]
         state_char = state_field[1]
         try:
@@ -302,6 +304,8 @@ def parse_sourcestats_full(
         if len(parts) < 8:
             continue
         ip = parts[0]
+        if ip not in source_info:
+            continue   # not an NTP source (refclock, or missing from sources output)
         try:
             np_val = int(parts[1])
             nr_val = int(parts[2])
@@ -999,7 +1003,11 @@ def _interruptible_sleep(seconds: float, stop_flag: threading.Event) -> None:
         stop_flag.wait(min(1.0, remaining))
 
 
-def _server_info_for_ui(s: Dict[str, Any]) -> Dict[str, Any]:
+def _server_info_for_ui(
+    s: Dict[str, Any],
+    cv_threshold: float = DEFAULT_CV_THRESHOLD,
+) -> Dict[str, Any]:
+    cv = s.get("cv_stdev")
     return {
         "name": s["name"],
         "ip": s["name"],    # IP or hostname; resolved by web UI if needed
@@ -1007,8 +1015,8 @@ def _server_info_for_ui(s: Dict[str, Any]) -> Dict[str, Any]:
         "stratum": s.get("stratum"),
         "mean_offset_ms": round(s.get("mean_offset_s", 0.0) * 1000, 4),
         "hourly_stdev_ms": round(s.get("mean_stdev_s", 0.0) * 1000, 4),
-        "cv_stdev": round(s.get("cv_stdev") or 0.0, 4),
-        "stable": s.get("cv_stdev") is not None,
+        "cv_stdev": round(cv or 0.0, 4),
+        "stable": cv is not None and cv < cv_threshold,
         "state_char": s.get("state_char", "?"),
     }
 
@@ -1273,9 +1281,9 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
         write_status_json(
             path=cfg.status_path,
             mode=mode,
-            preferred_server=_server_info_for_ui(preferred) if preferred else None,
-            active_servers=[_server_info_for_ui(s) for s in active],
-            noselect_servers=[_server_info_for_ui(s) for s in noselect],
+            preferred_server=_server_info_for_ui(preferred, cfg.cv_threshold) if preferred else None,
+            active_servers=[_server_info_for_ui(s, cfg.cv_threshold) for s in active],
+            noselect_servers=[_server_info_for_ui(s, cfg.cv_threshold) for s in noselect],
             privileged_servers=list(cfg.privileged_servers),
             calibration_basis=calibration_basis,
             frozen_since_utc=state.get("frozen_since_utc"),
