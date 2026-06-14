@@ -693,6 +693,12 @@ def _build_server_summaries(
     for server, entries in hourly_window.items():
         if not entries:
             continue
+        # Exclude invalid servers before they can ever win selection.
+        # WANC (our own SHM refclock) and private/loopback IPs must never
+        # appear as candidates — they would rank #1 (stratum 0, CV=0) and
+        # cause the real best server to be demoted to active without prefer.
+        if not _is_valid_ntp_server(server):
+            continue
         stdev_values = [e["hourly_stdev_s"] for e in entries]
         mean_stdev = statistics.mean(stdev_values) if stdev_values else None
         mean_offset = (
@@ -955,12 +961,17 @@ def write_chrony_conf(
 
 
 def _reload_chrony(reload_chrony: bool) -> None:
-    """Reload chrony config via chronyc reload sources."""
+    """Reload chrony config via systemctl reload (SIGHUP).
+
+    chronyc reload sources does not update poll parameters for existing
+    sources.  SIGHUP (systemctl reload chrony) forces a full config re-read
+    including minpoll/maxpoll changes, without losing the frequency model.
+    """
     if not reload_chrony:
         return
     try:
         subprocess.run(
-            ["chronyc", "reload", "sources"],
+            ["systemctl", "reload", "chrony"],
             capture_output=True, timeout=10,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:

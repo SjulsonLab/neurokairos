@@ -1313,6 +1313,45 @@ def test_o2_private_ip_not_written_to_managed_block(mod, tmp_path):
     assert "10.0.0.1" not in conf, "Private IP must not be written to chrony.conf managed block"
 
 
+# ---------------------------------------------------------------------------
+# Group P — invalid servers filtered from selection pool
+# ---------------------------------------------------------------------------
+
+def test_p1_wanc_excluded_from_select_servers_input(mod):
+    """WANC must be filtered from _build_server_summaries so select_servers never sees it."""
+    # Build hourly_window with WANC and a real server
+    wanc_entries = [
+        {"timestamp_s": 0.0, "mean_offset_s": 0.0, "hourly_stdev_s": 0.0,
+         "n_samples": 60, "stratum": 0, "tier": 3}
+    ] * mod.DEFAULT_MIN_STABILITY_SAMPLES
+    real_entries = [
+        {"timestamp_s": 0.0, "mean_offset_s": -700e-6, "hourly_stdev_s": 50e-6,
+         "n_samples": 60, "stratum": 1, "tier": 3}
+    ] * mod.DEFAULT_MIN_STABILITY_SAMPLES
+    hourly_window = {"WANC": wanc_entries, "216.239.35.4": real_entries}
+    summaries = mod._build_server_summaries(hourly_window, {}, frozenset(), mod.DEFAULT_MIN_STABILITY_SAMPLES)
+    names = [s["name"] for s in summaries]
+    assert "WANC" not in names, "WANC must never appear in server summaries for selection"
+    assert "216.239.35.4" in names
+
+
+def test_p2_private_ip_excluded_from_select_servers_input(mod):
+    """A private IP (e.g., 10.0.0.1 from DHCP) must not appear in server summaries."""
+    private_entries = [
+        {"timestamp_s": 0.0, "mean_offset_s": 0.0, "hourly_stdev_s": 0.0,
+         "n_samples": 60, "stratum": 0, "tier": 3}
+    ] * mod.DEFAULT_MIN_STABILITY_SAMPLES
+    real_entries = [
+        {"timestamp_s": 0.0, "mean_offset_s": -700e-6, "hourly_stdev_s": 50e-6,
+         "n_samples": 60, "stratum": 1, "tier": 3}
+    ] * mod.DEFAULT_MIN_STABILITY_SAMPLES
+    hourly_window = {"10.0.0.1": private_entries, "216.239.35.4": real_entries}
+    summaries = mod._build_server_summaries(hourly_window, {}, frozenset(), mod.DEFAULT_MIN_STABILITY_SAMPLES)
+    names = [s["name"] for s in summaries]
+    assert "10.0.0.1" not in names, "Private IP must not appear in server summaries"
+    assert "216.239.35.4" in names
+
+
 def test_o3_pool_member_not_in_managed_set_stays_out_of_block(mod, tmp_path):
     """A pool.ntp.org member IP not in managed_server_set must not appear as a server line."""
     cfg = _mock_config(tmp_path, mod)
