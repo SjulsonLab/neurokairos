@@ -27,6 +27,7 @@ import ctypes
 import ctypes.util
 import csv
 import enum
+import ipaddress
 import json
 import logging
 import os
@@ -60,7 +61,7 @@ DEFAULT_CHRONYC_TIMEOUT_S = 5.0
 DEFAULT_RAW_LOG_RETENTION_H = 72
 DEFAULT_HOURLY_LOG_RETENTION_H = 72
 DEFAULT_MIN_STABILITY_SAMPLES = 6
-DEFAULT_CV_THRESHOLD = 1.0
+DEFAULT_CV_THRESHOLD = 3.0
 DEFAULT_OVERRIDE_THRESHOLD = 0.20
 DEFAULT_ACTIVE_POOL_SIZE = 3
 ACTIVE_MINPOLL = 6
@@ -803,6 +804,50 @@ def _shm_precision_for_mode(mode: DaemonMode) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Server name validation
+# ---------------------------------------------------------------------------
+
+def _is_valid_ntp_server(name: str) -> bool:
+    """Return False for names that must never appear as managed server lines.
+
+    Rejects our own WANC refclock refid and non-global IPs (RFC1918, loopback,
+    link-local). Hostnames are accepted as-is (chrony resolves them).
+    """
+    if name.upper() == "WANC":
+        return False
+    try:
+        ip = ipaddress.ip_address(name)
+        return ip.is_global
+    except ValueError:
+        return True  # hostname; chrony will resolve it
+
+
+def _read_managed_server_set(conf_path: Path) -> frozenset:
+    """Return the validated set of server names in the current managed block.
+
+    Called at daemon startup to establish which servers the daemon is
+    authorised to individually manage. Pool.ntp.org member IPs that the
+    daemon mistakenly wrote before this fix will be filtered out if they
+    have never been in the original managed block — but since we can't
+    distinguish them by IP alone, we accept whatever is currently valid
+    and non-private. The manual conf cleanup done before deploying this
+    version ensures pool members are already removed.
+    """
+    try:
+        content = conf_path.read_text()
+    except OSError:
+        return frozenset()
+    servers: set = set()
+    for line in read_managed_block(content):
+        parts = line.strip().split()
+        if len(parts) >= 2 and parts[0] == "server":
+            name = parts[1]
+            if _is_valid_ntp_server(name):
+                servers.add(name)
+    return frozenset(servers)
+
+
+# ---------------------------------------------------------------------------
 # chrony.conf management
 # ---------------------------------------------------------------------------
 
@@ -1240,27 +1285,37 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
             for s in server_summaries
         ) if server_summaries else True
 
+        # Only servers that are valid AND in the managed set go into conf.
+        # This prevents WANC, private IPs, and pool.ntp.org member IPs from
+        # appearing as individual server lines alongside the pool directive.
+        managed_set = state.get("_managed_server_set", frozenset())
+
+        def _manageable(name: str) -> bool:
+            return _is_valid_ntp_server(name) and (not managed_set or name in managed_set)
+
         if in_warmup:
             initial = getattr(cfg, "initial_servers", DEFAULT_INITIAL_SERVERS)
             block_lines = [
                 build_server_line(srv, False, False, None)
                 for srv in initial
-                if srv != "pool.ntp.org"
+                if srv != "pool.ntp.org" and _is_valid_ntp_server(srv)
             ] + [POOL_DISCOVERY_LINE]
         else:
             block_lines = []
-            if preferred:
+            if preferred and _manageable(preferred["name"]):
                 block_lines.append(
                     build_server_line(
                         preferred["name"], True, False, preferred.get("mean_offset_s")
                     )
                 )
             for srv in active:
-                block_lines.append(
-                    build_server_line(srv["name"], False, False, srv.get("mean_offset_s"))
-                )
+                if _manageable(srv["name"]):
+                    block_lines.append(
+                        build_server_line(srv["name"], False, False, srv.get("mean_offset_s"))
+                    )
             for srv in noselect:
-                block_lines.append(build_server_line(srv["name"], False, True, None))
+                if _manageable(srv["name"]):
+                    block_lines.append(build_server_line(srv["name"], False, True, None))
             block_lines.append(
                 build_server_line("pool.ntp.org", False, True, None, is_pool=True)
             )
@@ -1307,6 +1362,9 @@ def run_daemon(cfg: Any) -> None:
 
     state = load_state(cfg.state_path)
     state.setdefault("_last_conf_servers", [])
+    # Read the set of individually managed servers from the current chrony.conf.
+    # This is re-derived on every start so manual conf edits are respected.
+    state["_managed_server_set"] = _read_managed_server_set(cfg.chrony_conf)
 
     stop_flag = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop_flag.set())

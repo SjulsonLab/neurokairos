@@ -879,14 +879,14 @@ def test_k3b_stable_field_false_when_cv_above_threshold(mod, tmp_path):
     (cv_stdev is not None) rather than (cv_stdev < cv_threshold).
     """
     summary = _stable_server("bad.ntp.org", stratum=1, mean_stdev_s=200e-6)
-    summary["cv_stdev"] = 1.5   # above DEFAULT_CV_THRESHOLD (1.0)
+    summary["cv_stdev"] = 3.5   # above DEFAULT_CV_THRESHOLD (3.0)
     info = mod._server_info_for_ui(summary, cv_threshold=mod.DEFAULT_CV_THRESHOLD)
     assert info["stable"] is False, (
         f"stable must be False when cv_stdev={summary['cv_stdev']} > threshold={mod.DEFAULT_CV_THRESHOLD}"
     )
 
     summary2 = _stable_server("good.ntp.org", stratum=1, mean_stdev_s=100e-6)
-    summary2["cv_stdev"] = 0.5  # below threshold
+    summary2["cv_stdev"] = 2.5  # below threshold (3.0)
     info2 = mod._server_info_for_ui(summary2, cv_threshold=mod.DEFAULT_CV_THRESHOLD)
     assert info2["stable"] is True
 
@@ -1215,3 +1215,124 @@ def test_m4_applied_offset_set_for_preferred_server(mod, tmp_path):
         # applied_offset_s must be non-empty for preferred
         assert r["applied_offset_s"] != "", \
             f"preferred server must have applied_offset_s set, got: {r}"
+
+
+# ---------------------------------------------------------------------------
+# Group N — _is_valid_ntp_server
+# ---------------------------------------------------------------------------
+
+def test_n1_valid_public_ip_is_valid(mod):
+    """A routable public IP is a valid managed server name."""
+    assert mod._is_valid_ntp_server("17.253.2.35") is True
+
+
+def test_n2_wanc_is_invalid(mod):
+    """WANC (our own SHM refclock refid) must never appear as a managed server."""
+    assert mod._is_valid_ntp_server("WANC") is False
+
+
+def test_n3_rfc1918_10_block_is_invalid(mod):
+    """10.x.x.x addresses (router NTP via DHCP) are not valid managed servers."""
+    assert mod._is_valid_ntp_server("10.0.0.1") is False
+
+
+def test_n4_rfc1918_192168_block_is_invalid(mod):
+    """192.168.x.x addresses are not valid managed servers."""
+    assert mod._is_valid_ntp_server("192.168.1.1") is False
+
+
+def test_n5_rfc1918_172_block_is_invalid(mod):
+    """172.16.x.x – 172.31.x.x addresses are not valid managed servers."""
+    assert mod._is_valid_ntp_server("172.16.0.1") is False
+
+
+def test_n6_hostname_is_valid(mod):
+    """A hostname (non-IP) is treated as valid."""
+    assert mod._is_valid_ntp_server("time.google.com") is True
+
+
+def test_n7_loopback_is_invalid(mod):
+    """Loopback address 127.0.0.1 is not a valid managed server."""
+    assert mod._is_valid_ntp_server("127.0.0.1") is False
+
+
+# ---------------------------------------------------------------------------
+# Group O — managed_server_set filtering in _run_hourly_cycle
+# ---------------------------------------------------------------------------
+
+def _make_mock_run_sourcestats_empty(mod):
+    """Return a mock that reports no NTP sources."""
+    def _mock(*_, **__):
+        return {}
+    return _mock
+
+
+def test_o1_wanc_not_written_to_managed_block(mod, tmp_path):
+    """WANC appearing in server summaries must never appear as a server line in chrony.conf."""
+    cfg = _mock_config(tmp_path, mod)
+    state = mod._default_state()
+    # Inject WANC as if it leaked from old hourly data
+    state["_hourly_window_override"] = {
+        "17.253.2.35": {"mean_offset_s": 49e-6,  "hourly_stdev_s": 61e-6,  "n_samples": 60, "stratum": 1},
+        "WANC":        {"mean_offset_s": 0.0,     "hourly_stdev_s": 66e-6,  "n_samples": 60, "stratum": 0},
+    }
+    # managed_server_set excludes WANC
+    state["_managed_server_set"] = frozenset({"17.253.2.35"})
+    seg, buf = _make_shm_segment(mod)
+
+    with (
+        patch.object(mod, "run_sourcestats_full", _make_mock_run_sourcestats_empty(mod)),
+        patch.object(mod, "run_chronyc_tracking", _make_mock_run_tracking(mod)),
+        patch.object(mod, "_reload_chrony", lambda *_: None),
+    ):
+        mod._run_hourly_cycle(cfg, state, seg)
+
+    conf = (tmp_path / "chrony.conf").read_text()
+    assert "WANC" not in conf, "WANC must never appear as a server line in chrony.conf"
+
+
+def test_o2_private_ip_not_written_to_managed_block(mod, tmp_path):
+    """A private IP from DHCP (e.g., 10.0.0.1) must not appear in chrony.conf managed block."""
+    cfg = _mock_config(tmp_path, mod)
+    state = mod._default_state()
+    state["_hourly_window_override"] = {
+        "17.253.2.35": {"mean_offset_s": 49e-6, "hourly_stdev_s": 61e-6, "n_samples": 60, "stratum": 1},
+        "10.0.0.1":    {"mean_offset_s": 0.0,   "hourly_stdev_s": 0.0,   "n_samples": 60, "stratum": 0},
+    }
+    state["_managed_server_set"] = frozenset({"17.253.2.35"})
+    seg, buf = _make_shm_segment(mod)
+
+    with (
+        patch.object(mod, "run_sourcestats_full", _make_mock_run_sourcestats_empty(mod)),
+        patch.object(mod, "run_chronyc_tracking", _make_mock_run_tracking(mod)),
+        patch.object(mod, "_reload_chrony", lambda *_: None),
+    ):
+        mod._run_hourly_cycle(cfg, state, seg)
+
+    conf = (tmp_path / "chrony.conf").read_text()
+    assert "10.0.0.1" not in conf, "Private IP must not be written to chrony.conf managed block"
+
+
+def test_o3_pool_member_not_in_managed_set_stays_out_of_block(mod, tmp_path):
+    """A pool.ntp.org member IP not in managed_server_set must not appear as a server line."""
+    cfg = _mock_config(tmp_path, mod)
+    state = mod._default_state()
+    pool_member_ip = "45.77.126.122"
+    state["_hourly_window_override"] = {
+        "17.253.2.35":  {"mean_offset_s": 49e-6,  "hourly_stdev_s": 61e-6, "n_samples": 60, "stratum": 1},
+        pool_member_ip: {"mean_offset_s": -100e-6, "hourly_stdev_s": 50e-6, "n_samples": 60, "stratum": 2},
+    }
+    # Critically: pool_member_ip is NOT in managed_server_set
+    state["_managed_server_set"] = frozenset({"17.253.2.35"})
+    seg, buf = _make_shm_segment(mod)
+
+    with (
+        patch.object(mod, "run_sourcestats_full", _make_mock_run_sourcestats_empty(mod)),
+        patch.object(mod, "run_chronyc_tracking", _make_mock_run_tracking(mod)),
+        patch.object(mod, "_reload_chrony", lambda *_: None),
+    ):
+        mod._run_hourly_cycle(cfg, state, seg)
+
+    conf = (tmp_path / "chrony.conf").read_text()
+    assert pool_member_ip not in conf, \
+        "Pool member not in managed_server_set must not be written to chrony.conf"
