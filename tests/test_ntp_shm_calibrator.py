@@ -1541,3 +1541,73 @@ def test_q4_last_conf_servers_persisted_across_restart(mod, tmp_path):
     )
     assert reloaded["last_conf_servers"] == state.get("last_conf_servers"), \
         "Reloaded last_conf_servers must match what was saved"
+
+
+def test_q5_fast_shm_refresh_between_raw_cycles(mod, tmp_path):
+    """run_daemon must refresh SHM every SHM_REFRESH_INTERVAL_S between raw cycles.
+
+    With chrony poll=4 (every 16 s), SHM timestamps must be updated more
+    frequently than 16 s to keep all 8 bits of the reachability register set
+    (reach=377).  The 60-second raw cycle is too slow: a single bit drifts
+    through the 8-bit register and falls off, causing reach=0 for ~50 s every
+    60-second window.
+
+    Fix: between raw cycles the daemon loop writes a fresh SHM timestamp every
+    SHM_REFRESH_INTERVAL_S (< poll interval), so every chrony poll sees a
+    recent receive_time and builds full reachability.
+    """
+    # Verify the constant exists and is strictly less than 16 s (poll=4 interval)
+    assert hasattr(mod, "SHM_REFRESH_INTERVAL_S"), \
+        "SHM_REFRESH_INTERVAL_S must be a module-level constant"
+    assert mod.SHM_REFRESH_INTERVAL_S < 16, (
+        f"SHM_REFRESH_INTERVAL_S={mod.SHM_REFRESH_INTERVAL_S} must be < 16 s "
+        "(chrony poll=4 interval) so every poll sees a fresh timestamp"
+    )
+
+    cfg = _mock_config(tmp_path, mod)
+    state = mod._default_state()
+    state["last_bias_s"] = 49e-6
+    state["_last_mode"] = mod.DaemonMode.WAN_CONSENSUS
+    seg, buf = _make_shm_segment(mod)
+
+    shm_writes = []
+
+    orig_write = seg.write_time
+
+    def _track_write(*, clock_time_s, receive_time_s, precision, leap=0):
+        shm_writes.append(receive_time_s)
+        return orig_write(
+            clock_time_s=clock_time_s,
+            receive_time_s=receive_time_s,
+            precision=precision,
+            leap=leap,
+        )
+
+    iterations = 0
+    max_iterations = 5
+
+    def _fake_sleep(seconds, stop_flag):
+        nonlocal iterations
+        iterations += 1
+        if iterations >= max_iterations:
+            stop_flag.set()
+
+    with (
+        patch.object(mod, "run_sourcestats_full", _make_mock_run_sourcestats(mod)),
+        patch.object(mod, "run_chronyc_tracking", _make_mock_run_tracking(mod)),
+        patch.object(seg, "write_time", _track_write),
+        patch.object(mod, "_interruptible_sleep", _fake_sleep),
+        patch.object(mod, "save_state", lambda *a, **kw: None),
+        patch.object(mod, "load_state", lambda *a, **kw: state),
+        patch.object(mod, "_read_managed_server_set", lambda *a, **kw: frozenset()),
+        patch.object(mod, "ShmSegment", lambda *a, **kw: seg),
+    ):
+        mod.run_daemon(cfg)
+
+    # With max_iterations=5 (14s each = 70s total), and raw cycle every 60s,
+    # we expect: 1 raw cycle (at t=0 startup) + 4 fast refresh writes
+    # = at least 5 total SHM writes. The fast loop must write between raw cycles.
+    assert len(shm_writes) >= max_iterations, (
+        f"Expected ≥{max_iterations} SHM writes in {max_iterations} loop "
+        f"iterations (fast refresh between raw cycles), got {len(shm_writes)}"
+    )
