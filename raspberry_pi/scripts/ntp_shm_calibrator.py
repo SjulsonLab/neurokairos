@@ -1230,6 +1230,12 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
 
         rotate_hourly_log(cfg.log_dir, cfg.hourly_log_retention_h)
 
+    logger.info(
+        "hourly cycle: mode=%s servers=%d preferred=%s",
+        mode.value, len(server_summaries),
+        preferred["name"] if preferred else None,
+    )
+
     # --- Compute bias for SHM ---
     bias_s: Optional[float] = None
     calibration_basis = "frozen"
@@ -1246,6 +1252,10 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
         # Build flat summaries dict keyed by server
         flat = {s["name"]: {"mean_offset_s": s["mean_offset_s"]} for s in server_summaries}
         selected = preferred["name"] if preferred else None
+        logger.info(
+            "consensus: flat=%d selected=%s selected_in_flat=%s",
+            len(flat), selected, selected in flat if selected else False,
+        )
         if selected:
             bias_s = compute_consensus_offset(flat, selected, min_quorum=3)
         if bias_s is not None:
@@ -1278,10 +1288,12 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
                 receive_time_s=now,
                 precision=precision,
             )
+            logger.info("SHM written: bias_s=%.6f precision=%d", bias_s, precision)
         except RuntimeError as exc:
             logger.error("SHM write failed: %s", exc)
             shm.invalidate()
     else:
+        logger.warning("SHM invalidated: bias_s is None (mode=%s)", mode.value)
         shm.invalidate()
 
     # --- Update chrony.conf ---
