@@ -974,6 +974,11 @@ def _reload_chrony(reload_chrony: bool) -> None:
             ["systemctl", "reload", "chrony"],
             capture_output=True, timeout=10,
         )
+        # systemctl reload returns as soon as SIGHUP is delivered, but chrony
+        # processes it asynchronously.  Chrony re-initializes its SHM refclock
+        # source as part of SIGHUP handling, clearing valid=0 on the segment.
+        # Wait long enough for chrony to finish that re-init before we write SHM.
+        time.sleep(2)
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
         logger.warning("chrony reload failed: %s", exc)
 
