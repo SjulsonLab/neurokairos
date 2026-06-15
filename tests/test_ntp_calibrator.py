@@ -221,6 +221,24 @@ def test_a9_garbage_input(mod):
     assert mod.parse_sourcestats("not chronyc output\ngarbage") == {}
 
 
+def test_a10_truncated_names_skipped(mod):
+    """Hostnames truncated by chronyc (ending '>') are skipped.
+
+    chronyc column width is 25 chars; long pool.ntp.org reverse-DNS names
+    get truncated to fit, producing invalid hostnames like 'usnyc3-ntp-001.aaplimg.c>'.
+    """
+    text = (
+        "Name/IP Address            NP  NR  Span  Frequency  Freq Skew"
+        "  Offset  Std Dev\n"
+        "==============================================================================\n"
+        "time2.google.com           16   8   32m   +0.003     0.042    +49us   61us\n"
+        "usnyc3-ntp-001.aaplimg.c>  16   8   32m   +0.001     0.038    -28us  369us\n"
+    )
+    result = mod.parse_sourcestats(text)
+    assert "time2.google.com" in result
+    assert not any(k.endswith(">") for k in result)
+
+
 # ---------------------------------------------------------------------------
 # Group B — parse_sources
 # ---------------------------------------------------------------------------
@@ -887,3 +905,50 @@ def test_n5_all_server_names_in_output(mod):
     )
     for ip in ["1.1.1.1", "2.2.2.2", "3.3.3.3"]:
         assert sum(1 for l in lines if ip in l) == 1
+
+
+# ---------------------------------------------------------------------------
+# Group O — select_active_servers (limits calibrated pool to top-N)
+# ---------------------------------------------------------------------------
+
+def test_o1_limits_to_active_pool_size(mod):
+    """Only top active_pool_size servers get calibrated; rest are noselect."""
+    stats = {
+        "a.com": {"mean_offset_s": 0.0, "stdev_s": 30e-6, "n": 10},  # best
+        "b.com": {"mean_offset_s": 0.0, "stdev_s": 60e-6, "n": 10},
+        "c.com": {"mean_offset_s": 0.0, "stdev_s": 90e-6, "n": 10},
+        "d.com": {"mean_offset_s": 0.0, "stdev_s": 120e-6, "n": 10},  # worst
+    }
+    active, noselect = mod.select_active_servers(stats, active_pool_size=2)
+    assert len(active) == 2
+    assert "a.com" in active  # lowest stdev always in active
+    assert "d.com" in noselect
+
+
+def test_o2_reference_always_in_active(mod):
+    """The reference server (lowest stdev) is always in the active set."""
+    stats = {
+        "best.com": {"mean_offset_s": 0.0, "stdev_s": 30e-6, "n": 10},
+        "ok.com":   {"mean_offset_s": 0.0, "stdev_s": 60e-6, "n": 10},
+        "bad.com":  {"mean_offset_s": 0.0, "stdev_s": 200e-6, "n": 10},
+    }
+    active, noselect = mod.select_active_servers(stats, active_pool_size=2)
+    assert "best.com" in active
+
+
+def test_o3_all_active_when_pool_size_exceeds_count(mod):
+    """When pool_size >= number of servers, noselect is empty."""
+    stats = {
+        "a.com": {"mean_offset_s": 0.0, "stdev_s": 30e-6, "n": 10},
+        "b.com": {"mean_offset_s": 0.0, "stdev_s": 60e-6, "n": 10},
+    }
+    active, noselect = mod.select_active_servers(stats, active_pool_size=5)
+    assert len(active) == 2
+    assert noselect == set()
+
+
+def test_o4_empty_stats_returns_empty(mod):
+    """Empty stats → empty active and noselect."""
+    active, noselect = mod.select_active_servers({}, active_pool_size=3)
+    assert active == {}
+    assert noselect == set()

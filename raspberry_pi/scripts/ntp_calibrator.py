@@ -90,6 +90,11 @@ def parse_sourcestats(text: str) -> dict:
         if len(parts) < 8:
             continue
         name = parts[0]
+        # chronyc truncates names longer than 25 chars with '>'; skip these —
+        # they are pool.ntp.org members with long reverse-DNS names that cannot
+        # be written as valid server lines in chrony.conf.
+        if name.endswith(">"):
+            continue
         try:
             np_val = int(parts[1])
         except ValueError:
@@ -251,6 +256,25 @@ def build_server_line(server: str, is_reference: bool, is_noselect: bool,
     elif offset_s is not None:
         parts.append(f"offset {offset_s:+.9f}")
     return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Group O — select_active_servers
+# ---------------------------------------------------------------------------
+
+def select_active_servers(stats: dict, active_pool_size: int = 3):
+    """Split stats into active (top-N by stdev) and noselect (the rest).
+
+    Returns (active_stats, noselect_servers) where:
+      active_stats  — dict {server: stat} for the top active_pool_size servers
+      noselect_servers — set of server names that didn't make the cut
+    """
+    if not stats:
+        return {}, set()
+    sorted_servers = sorted(stats, key=lambda s: stats[s]["stdev_s"])
+    active_keys = sorted_servers[:active_pool_size]
+    noselect_keys = sorted_servers[active_pool_size:]
+    return {s: stats[s] for s in active_keys}, set(noselect_keys)
 
 
 # ---------------------------------------------------------------------------
@@ -577,9 +601,11 @@ def _run_calibration_loop(config: dict, state: dict, log_path: str) -> dict:
         logger.error("No stable servers found after calibration; will retry")
         return state
 
-    calibrated_offsets = compute_relative_offsets(server_stats, reference_server)
+    active_pool_size = config.get("active_pool_size", 3)
+    active_stats, noselect_servers = select_active_servers(server_stats, active_pool_size)
+    calibrated_offsets = compute_relative_offsets(active_stats, reference_server)
     lines = build_calibrated_conf_lines(reference_server, calibrated_offsets,
-                                         noselect_servers=set(), poll=poll)
+                                         noselect_servers=noselect_servers, poll=poll)
     write_managed_block(conf_path, lines)
     restart_chrony()
 
