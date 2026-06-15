@@ -1115,6 +1115,24 @@ def _run_raw_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
     state["_last_sourcestats"] = sourcestats
     state["_last_mode"] = mode
 
+    # Refresh SHM every raw cycle so that WANC reachability recovers within
+    # one raw-cycle interval after any chrony reload, not one full hour.
+    # Chrony clears SHM valid=0 when processing SIGHUP; without this refresh
+    # WANC would stay at reachability=0 for up to 3600 s.
+    bias_s = state.get("last_bias_s")
+    if bias_s is not None:
+        precision = _shm_precision_for_mode(mode)
+        now = time.time()
+        try:
+            shm.write_time(
+                clock_time_s=now - bias_s,
+                receive_time_s=now,
+                precision=precision,
+            )
+        except RuntimeError as exc:
+            logger.warning("SHM refresh failed in raw cycle: %s", exc)
+            shm.invalidate()
+
 
 def _servers_in_raw_logs(log_dir: Path, window_s: float) -> set:
     """Return server names seen in raw logs within the last window_s seconds."""
@@ -1284,24 +1302,30 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
                 pass
 
     # --- Update chrony.conf ---
-    new_conf_servers = (
-        [preferred["name"] if preferred else None]
-        + [s["name"] for s in active]
-        + [s["name"] for s in noselect]
-    )
+    # Only servers that are valid AND in the managed set go into conf.
+    # This prevents WANC, private IPs, and pool.ntp.org member IPs from
+    # appearing as individual server lines alongside the pool directive.
+    managed_set = state.get("_managed_server_set", frozenset())
+
+    def _manageable(name: str) -> bool:
+        return _is_valid_ntp_server(name) and (not managed_set or name in managed_set)
+
+    # Exclude pool member IPs from the comparison key so that pool churn
+    # (different IPs returned by pool.ntp.org each cycle) does not trigger a
+    # chrony reload.  Only servers that actually appear in chrony.conf matter.
+    new_conf_servers = [
+        n for n in (
+            [preferred["name"] if preferred else None]
+            + [s["name"] for s in active]
+            + [s["name"] for s in noselect]
+        )
+        if n is not None and _manageable(n)
+    ]
     if new_conf_servers != state.get("_last_conf_servers"):
         in_warmup = all(
             s.get("n_hourly_samples", 0) < cfg.min_stability_samples
             for s in server_summaries
         ) if server_summaries else True
-
-        # Only servers that are valid AND in the managed set go into conf.
-        # This prevents WANC, private IPs, and pool.ntp.org member IPs from
-        # appearing as individual server lines alongside the pool directive.
-        managed_set = state.get("_managed_server_set", frozenset())
-
-        def _manageable(name: str) -> bool:
-            return _is_valid_ntp_server(name) and (not managed_set or name in managed_set)
 
         if in_warmup:
             initial = getattr(cfg, "initial_servers", DEFAULT_INITIAL_SERVERS)
