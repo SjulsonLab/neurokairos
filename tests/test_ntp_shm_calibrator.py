@@ -1002,7 +1002,7 @@ def test_l3_hourly_cycle_rewrites_conf_when_ranking_changes(mod, tmp_path):
     """Hourly cycle updates chrony.conf when server ranking changes."""
     cfg = _mock_config(tmp_path, mod)
     state = mod._default_state()
-    state["_last_conf_servers"] = []  # no previous ranking → always rewrite
+    state["last_conf_servers"] = []  # no previous ranking → always rewrite
 
     seg, buf = _make_shm_segment(mod)
     summaries = {
@@ -1391,7 +1391,7 @@ def test_q1_shm_written_after_chrony_reload(mod, tmp_path):
     cfg = _mock_config(tmp_path, mod)
     cfg.reload_chrony = True  # enable reload so the mock fires
     state = mod._default_state()
-    state["_last_conf_servers"] = []  # force conf rewrite → triggers reload
+    state["last_conf_servers"] = []  # force conf rewrite → triggers reload
 
     summaries = {
         "17.253.2.35":  {"mean_offset_s": 49e-6,  "hourly_stdev_s": 61e-6,  "n_samples": 60, "stratum": 1},
@@ -1441,7 +1441,7 @@ def test_q2_pool_member_churn_does_not_trigger_reload(mod, tmp_path):
 
     # Simulate the state after a previous cycle: conf was last written with
     # only the one managed server (no pool members were tracked).
-    state["_last_conf_servers"] = ["17.253.2.35"]
+    state["last_conf_servers"] = ["17.253.2.35"]
 
     # This cycle's window includes the managed server PLUS two pool members
     # (simulating pool.ntp.org member churn).
@@ -1497,3 +1497,47 @@ def test_q3_raw_cycle_refreshes_shm_with_last_bias(mod, tmp_path):
         "Raw cycle must write SHM when last_bias_s is available so that "
         "reachability recovers within 60 s after any chrony reload, not 3600 s"
     )
+
+
+def test_q4_last_conf_servers_persisted_across_restart(mod, tmp_path):
+    """last_conf_servers must be saved to disk so daemon restarts don't reload chrony.
+
+    Root cause: _last_conf_servers was prefixed with '_', causing save_state to
+    strip it (it only persists keys without leading '_').  On every restart the
+    key defaulted to [], triggering a chrony SIGHUP that reset WANC reachability
+    to 0 and required 8 minutes of raw-cycle writes to recover.
+
+    Fix: rename the key to last_conf_servers (no underscore prefix) so that
+    save_state persists it and load_state restores it on the next start.
+    """
+    cfg = _mock_config(tmp_path, mod)
+    state = mod._default_state()
+    seg, _ = _make_shm_segment(mod)
+
+    state["_managed_server_set"] = frozenset({"17.253.2.35", "216.239.35.4"})
+    summaries = {
+        "17.253.2.35":  {"mean_offset_s": 49e-6,  "hourly_stdev_s": 61e-6,  "n_samples": 60, "stratum": 1},
+        "216.239.35.4": {"mean_offset_s": -199e-6, "hourly_stdev_s": 312e-6, "n_samples": 60, "stratum": 1},
+    }
+    state["_hourly_window_override"] = summaries
+
+    # Run the hourly cycle so that last_conf_servers gets set in state
+    with (
+        patch.object(mod, "run_sourcestats_full", _make_mock_run_sourcestats(mod)),
+        patch.object(mod, "run_chronyc_tracking", _make_mock_run_tracking(mod)),
+    ):
+        mod._run_hourly_cycle(cfg, state, seg)
+
+    # Save state to disk (simulates end-of-cycle persistence)
+    mod.save_state(state, cfg.state_path)
+
+    # Reload state (simulates daemon restart)
+    reloaded = mod.load_state(cfg.state_path)
+
+    assert "last_conf_servers" in reloaded, (
+        "last_conf_servers must be persisted by save_state so that daemon "
+        "restarts know which servers are already in chrony.conf and can skip "
+        "the SIGHUP that resets WANC reachability to 0"
+    )
+    assert reloaded["last_conf_servers"] == state.get("last_conf_servers"), \
+        "Reloaded last_conf_servers must match what was saved"
