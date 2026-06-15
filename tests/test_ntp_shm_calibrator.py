@@ -1375,3 +1375,46 @@ def test_o3_pool_member_not_in_managed_set_stays_out_of_block(mod, tmp_path):
     conf = (tmp_path / "chrony.conf").read_text()
     assert pool_member_ip not in conf, \
         "Pool member not in managed_server_set must not be written to chrony.conf"
+
+
+# ===========================================================================
+# Group Q — SHM write ordering relative to chrony reload
+# ===========================================================================
+
+def test_q1_shm_written_after_chrony_reload(mod, tmp_path):
+    """SHM must be written AFTER chrony reload so chrony's re-init can't clear it.
+
+    Root cause: systemctl reload chrony (SIGHUP) causes chrony to re-initialize
+    its SHM refclock source, clearing valid=0. If we write SHM before reload,
+    chrony wipes the write and WANC stays at reachability=0 indefinitely.
+    """
+    cfg = _mock_config(tmp_path, mod)
+    cfg.reload_chrony = True  # enable reload so the mock fires
+    state = mod._default_state()
+    state["_last_conf_servers"] = []  # force conf rewrite → triggers reload
+
+    summaries = {
+        "17.253.2.35":  {"mean_offset_s": 49e-6,  "hourly_stdev_s": 61e-6,  "n_samples": 60, "stratum": 1},
+        "216.239.35.4": {"mean_offset_s": -199e-6, "hourly_stdev_s": 312e-6, "n_samples": 60, "stratum": 1},
+        "162.159.200.1":{"mean_offset_s": -28e-6,  "hourly_stdev_s": 369e-6, "n_samples": 60, "stratum": 3},
+    }
+    state["_hourly_window_override"] = summaries
+
+    seg, buf = _make_shm_segment(mod)
+
+    def _chrony_reload_clears_shm(reload: bool) -> None:
+        # Simulate what chrony does on SIGHUP: re-init clears valid flag
+        if reload:
+            seg.invalidate()
+
+    with (
+        patch.object(mod, "run_sourcestats_full", _make_mock_run_sourcestats(mod)),
+        patch.object(mod, "run_chronyc_tracking", _make_mock_run_tracking(mod)),
+        patch.object(mod, "_reload_chrony", _chrony_reload_clears_shm),
+    ):
+        mod._run_hourly_cycle(cfg, state, seg)
+
+    assert buf.valid == 1, (
+        "SHM valid must be 1 after the hourly cycle even when chrony reload "
+        "clears it mid-cycle — the SHM write must happen after the reload"
+    )

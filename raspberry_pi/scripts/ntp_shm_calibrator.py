@@ -1278,24 +1278,6 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
             except (ValueError, TypeError):
                 pass
 
-    # --- Write SHM ---
-    precision = _shm_precision_for_mode(mode)
-    now = time.time()
-    if bias_s is not None:
-        try:
-            shm.write_time(
-                clock_time_s=now - bias_s,
-                receive_time_s=now,
-                precision=precision,
-            )
-            logger.info("SHM written: bias_s=%.6f precision=%d", bias_s, precision)
-        except RuntimeError as exc:
-            logger.error("SHM write failed: %s", exc)
-            shm.invalidate()
-    else:
-        logger.warning("SHM invalidated: bias_s is None (mode=%s)", mode.value)
-        shm.invalidate()
-
     # --- Update chrony.conf ---
     new_conf_servers = (
         [preferred["name"] if preferred else None]
@@ -1349,6 +1331,26 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
             state["_last_conf_servers"] = new_conf_servers
         except OSError as exc:
             logger.error("chrony.conf write failed: %s", exc)
+
+    # --- Write SHM (after any chrony reload that would reset the valid flag) ---
+    # chrony re-initializes its SHM refclock on SIGHUP and clears valid=0, so
+    # the SHM write must happen after the reload or WANC stays at reachability=0.
+    precision = _shm_precision_for_mode(mode)
+    now = time.time()
+    if bias_s is not None:
+        try:
+            shm.write_time(
+                clock_time_s=now - bias_s,
+                receive_time_s=now,
+                precision=precision,
+            )
+            logger.info("SHM written: bias_s=%.6f precision=%d", bias_s, precision)
+        except RuntimeError as exc:
+            logger.error("SHM write failed: %s", exc)
+            shm.invalidate()
+    else:
+        logger.warning("SHM invalidated: bias_s is None (mode=%s)", mode.value)
+        shm.invalidate()
 
     # --- Write status JSON ---
     state["preferred_server"] = preferred["name"] if preferred else None
