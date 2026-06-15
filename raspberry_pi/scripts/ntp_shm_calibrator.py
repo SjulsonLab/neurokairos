@@ -1028,7 +1028,7 @@ def _default_state() -> Dict[str, Any]:
         "last_update_utc": None,
         "frozen_since_utc": None,
         "mode": DaemonMode.WAN_CONSENSUS.value,
-        "_last_conf_servers": [],
+        "last_conf_servers": [],
     }
 
 
@@ -1129,9 +1129,15 @@ def _run_raw_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
                 receive_time_s=now,
                 precision=precision,
             )
+            logger.info(
+                "SHM refreshed: bias_s=%.6f precision=%d valid_after=%d",
+                bias_s, precision, shm._shm_ptr[0].valid,
+            )
         except RuntimeError as exc:
             logger.warning("SHM refresh failed in raw cycle: %s", exc)
             shm.invalidate()
+    else:
+        logger.debug("raw cycle: skipping SHM refresh (last_bias_s is None)")
 
 
 def _servers_in_raw_logs(log_dir: Path, window_s: float) -> set:
@@ -1321,7 +1327,7 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
         )
         if n is not None and _manageable(n)
     ]
-    if new_conf_servers != state.get("_last_conf_servers"):
+    if new_conf_servers != state.get("last_conf_servers"):
         in_warmup = all(
             s.get("n_hourly_samples", 0) < cfg.min_stability_samples
             for s in server_summaries
@@ -1357,7 +1363,7 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
         try:
             write_chrony_conf(cfg.chrony_conf, block_lines)
             _reload_chrony(getattr(cfg, "reload_chrony", True))
-            state["_last_conf_servers"] = new_conf_servers
+            state["last_conf_servers"] = new_conf_servers
         except OSError as exc:
             logger.error("chrony.conf write failed: %s", exc)
 
@@ -1415,7 +1421,7 @@ def run_daemon(cfg: Any) -> None:
         sys.exit(1)
 
     state = load_state(cfg.state_path)
-    state.setdefault("_last_conf_servers", [])
+    state.setdefault("last_conf_servers", [])
     # Read the set of individually managed servers from the current chrony.conf.
     # This is re-derived on every start so manual conf edits are respected.
     state["_managed_server_set"] = _read_managed_server_set(cfg.chrony_conf)
