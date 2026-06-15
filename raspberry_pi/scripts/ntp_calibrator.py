@@ -395,11 +395,21 @@ def default_state() -> dict:
     }
 
 
+_VALID_MODES = frozenset({"CALIBRATING", "MONITORING", "FROZEN", "NOTIFIED"})
+
+
 def load_state(state_path: str) -> dict:
-    """Load daemon state from JSON. Returns default_state() on any error."""
+    """Load daemon state from JSON.
+
+    Returns default_state() on any error or if the state has an unrecognized
+    mode (e.g. a state file left by the previous SHM-based daemon).
+    """
     try:
         with open(state_path) as f:
-            return json.load(f)
+            state = json.load(f)
+        if state.get("mode") not in _VALID_MODES:
+            return default_state()
+        return state
     except (OSError, json.JSONDecodeError):
         return default_state()
 

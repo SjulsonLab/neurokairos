@@ -647,6 +647,17 @@ def test_k2_corrupt_json_returns_default(mod, tmp_path):
     assert state["mode"] == mod.default_state()["mode"]
 
 
+def test_k2b_unrecognized_mode_returns_default(mod, tmp_path):
+    """load_state returns default_state() when mode is not a recognized value.
+
+    Guards against state files left by the old SHM-based daemon (mode='WAN_CONSENSUS').
+    """
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"mode": "WAN_CONSENSUS", "preferred_server": "1.2.3.4"}))
+    state = mod.load_state(str(path))
+    assert state["mode"] == "CALIBRATING"
+
+
 def test_k3_roundtrip(mod, tmp_path):
     """save_state + load_state preserves all fields exactly."""
     path = tmp_path / "state.json"
