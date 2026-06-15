@@ -1553,8 +1553,9 @@ def test_q5_fast_shm_refresh_between_raw_cycles(mod, tmp_path):
     60-second window.
 
     Fix: between raw cycles the daemon loop writes a fresh SHM timestamp every
-    SHM_REFRESH_INTERVAL_S (< poll interval), so every chrony poll sees a
-    recent receive_time and builds full reachability.
+    SHM_REFRESH_INTERVAL_S.  Empirically, chrony's staleness threshold is ~12-13 s
+    (poll=4); the raw cycle takes ~10 s, so SHM_REFRESH_INTERVAL_S must be ≤ 2 s
+    to keep the worst-case gap (refresh + raw_cycle_time) below the threshold.
     """
     # Verify the constant exists and is strictly less than 16 s (poll=4 interval)
     assert hasattr(mod, "SHM_REFRESH_INTERVAL_S"), \
@@ -1604,8 +1605,8 @@ def test_q5_fast_shm_refresh_between_raw_cycles(mod, tmp_path):
     ):
         mod.run_daemon(cfg)
 
-    # With max_iterations=5 (14s each = 70s total), and raw cycle every 60s,
-    # we expect: 1 raw cycle (at t=0 startup) + 4 fast refresh writes
+    # With max_iterations=5 and raw cycle only at startup (t=0),
+    # we expect: 1 startup raw+hourly write + 4 fast refresh writes
     # = at least 5 total SHM writes. The fast loop must write between raw cycles.
     assert len(shm_writes) >= max_iterations, (
         f"Expected ≥{max_iterations} SHM writes in {max_iterations} loop "

@@ -72,9 +72,12 @@ DEFAULT_FROZEN_MAX_AGE_S = 14400   # 4 hours
 DEFAULT_TRUTH_REFIDS = frozenset({"GPS", "PPS"})
 
 # SHM is refreshed at this interval so chrony's 16-second poll (poll=4) always
-# sees a recent receive_time, keeping WANC reachability at 377 (all 8 bits).
-# Must be strictly less than 2^poll = 16 s.
-SHM_REFRESH_INTERVAL_S = 14
+# sees a fresh receive_time, keeping WANC reachability at 377 (all 8 bits).
+# The raw cycle takes ~10 s (chronyc calls), creating a gap of
+# SHM_REFRESH_INTERVAL_S + raw_cycle_time between SHM writes.  Empirically,
+# chrony's staleness threshold is ~12-13 s (poll=4), so the gap must stay
+# below that.  2 s gives a worst-case gap of 12 s (2 + 10), which clears it.
+SHM_REFRESH_INTERVAL_S = 2
 
 MANAGED_BEGIN = "# BEGIN ntp-calibrator-managed"
 MANAGED_END = "# END ntp-calibrator-managed"
