@@ -1418,3 +1418,82 @@ def test_q1_shm_written_after_chrony_reload(mod, tmp_path):
         "SHM valid must be 1 after the hourly cycle even when chrony reload "
         "clears it mid-cycle — the SHM write must happen after the reload"
     )
+
+
+def test_q2_pool_member_churn_does_not_trigger_reload(mod, tmp_path):
+    """Chrony reload must NOT fire when only pool member IPs change in sourcestats.
+
+    Root cause: new_conf_servers previously included all server IPs (including
+    pool.ntp.org members not in managed_set). Pool members change every cycle
+    (different members are assigned), making new_conf_servers != _last_conf_servers
+    and triggering a chrony reload every cycle. The reload clears SHM valid=0
+    and forces WANC to rebuild reachability from scratch each hour.
+
+    Fix: filter new_conf_servers to only include servers that are actually
+    written to chrony.conf (i.e. those in managed_set).
+    """
+    cfg = _mock_config(tmp_path, mod)
+    cfg.reload_chrony = True
+    state = mod._default_state()
+
+    # Only "17.253.2.35" is in the managed set — the others are pool members
+    state["_managed_server_set"] = frozenset({"17.253.2.35"})
+
+    # Simulate the state after a previous cycle: conf was last written with
+    # only the one managed server (no pool members were tracked).
+    state["_last_conf_servers"] = ["17.253.2.35"]
+
+    # This cycle's window includes the managed server PLUS two pool members
+    # (simulating pool.ntp.org member churn).
+    summaries = {
+        "17.253.2.35":  {"mean_offset_s": 49e-6,  "hourly_stdev_s": 61e-6,  "n_samples": 60, "stratum": 1},
+        "216.239.35.4": {"mean_offset_s": -199e-6, "hourly_stdev_s": 312e-6, "n_samples": 60, "stratum": 1},
+        "123.45.67.89": {"mean_offset_s": -10e-6,  "hourly_stdev_s": 200e-6, "n_samples": 60, "stratum": 1},
+    }
+    state["_hourly_window_override"] = summaries
+
+    reload_called = []
+
+    def _track_reload(reload: bool) -> None:
+        if reload:
+            reload_called.append(True)
+
+    seg, buf = _make_shm_segment(mod)
+
+    with (
+        patch.object(mod, "run_sourcestats_full", _make_mock_run_sourcestats(mod)),
+        patch.object(mod, "run_chronyc_tracking", _make_mock_run_tracking(mod)),
+        patch.object(mod, "_reload_chrony", _track_reload),
+    ):
+        mod._run_hourly_cycle(cfg, state, seg)
+
+    assert not reload_called, (
+        "Chrony reload must NOT be triggered when only pool member IPs "
+        "(not in managed_set) differ between cycles. Pool churn must not "
+        "cause repeated SHM invalidations."
+    )
+
+
+def test_q3_raw_cycle_refreshes_shm_with_last_bias(mod, tmp_path):
+    """Raw cycle must write SHM every 60 s using the last hourly bias.
+
+    If chrony clears SHM valid during a reload, the raw cycle (every 60 s)
+    must restore it without waiting for the next hourly cycle (up to 3600 s).
+    Recovery time is bounded by the raw cycle interval, not the hourly interval.
+    """
+    cfg = _mock_config(tmp_path, mod)
+    state = mod._default_state()
+    state["last_bias_s"] = 49e-6  # bias computed in last hourly cycle
+
+    seg, buf = _make_shm_segment(mod)
+
+    with (
+        patch.object(mod, "run_sourcestats_full", _make_mock_run_sourcestats(mod)),
+        patch.object(mod, "run_chronyc_tracking", _make_mock_run_tracking(mod)),
+    ):
+        mod._run_raw_cycle(cfg, state, seg)
+
+    assert buf.valid == 1, (
+        "Raw cycle must write SHM when last_bias_s is available so that "
+        "reachability recovers within 60 s after any chrony reload, not 3600 s"
+    )
