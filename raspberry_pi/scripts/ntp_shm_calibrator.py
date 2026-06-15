@@ -71,6 +71,11 @@ NOSELECT_MAXPOLL = 7
 DEFAULT_FROZEN_MAX_AGE_S = 14400   # 4 hours
 DEFAULT_TRUTH_REFIDS = frozenset({"GPS", "PPS"})
 
+# SHM is refreshed at this interval so chrony's 16-second poll (poll=4) always
+# sees a recent receive_time, keeping WANC reachability at 377 (all 8 bits).
+# Must be strictly less than 2^poll = 16 s.
+SHM_REFRESH_INTERVAL_S = 14
+
 MANAGED_BEGIN = "# BEGIN ntp-calibrator-managed"
 MANAGED_END = "# END ntp-calibrator-managed"
 
@@ -1431,15 +1436,22 @@ def run_daemon(cfg: Any) -> None:
     signal.signal(signal.SIGINT, lambda *_: stop_flag.set())
 
     last_hourly_s = 0.0
+    last_raw_s = 0.0
     logger.info("NTP SHM calibration daemon started (segment %d)", cfg.shm_segment)
 
     while not stop_flag.is_set():
-        try:
-            _run_raw_cycle(cfg, state, shm)
-        except Exception as exc:   # pylint: disable=broad-except
-            logger.error("raw cycle error: %s", exc)
-
         now = time.time()
+
+        # Raw cycle (every poll_interval_s): chronyc calls and raw sample logging
+        run_raw = (now - last_raw_s >= cfg.poll_interval_s)
+        if run_raw:
+            try:
+                _run_raw_cycle(cfg, state, shm)
+            except Exception as exc:   # pylint: disable=broad-except
+                logger.error("raw cycle error: %s", exc)
+            last_raw_s = now
+
+        # Hourly cycle (every hourly_window_s): aggregation, selection, conf update
         if now - last_hourly_s >= cfg.hourly_window_s:
             try:
                 _run_hourly_cycle(cfg, state, shm)
@@ -1451,7 +1463,25 @@ def run_daemon(cfg: Any) -> None:
                 logger.warning("state save failed: %s", exc)
             last_hourly_s = now
 
-        _interruptible_sleep(cfg.poll_interval_s, stop_flag)
+        # Fast SHM refresh between raw/hourly cycles (every SHM_REFRESH_INTERVAL_S).
+        # Chrony polls every 16 s (poll=4); if receive_time is stale (older than
+        # one poll interval) chrony rejects the sample.  Without this refresh,
+        # only 1 sample per 60 s is accepted, giving 2/8 reachability bits.
+        elif not run_raw:
+            bias_s = state.get("last_bias_s")
+            if bias_s is not None:
+                mode = state.get("_last_mode", DaemonMode.WAN_CONSENSUS)
+                t = time.time()
+                try:
+                    shm.write_time(
+                        clock_time_s=t - bias_s,
+                        receive_time_s=t,
+                        precision=_shm_precision_for_mode(mode),
+                    )
+                except RuntimeError:
+                    shm.invalidate()
+
+        _interruptible_sleep(SHM_REFRESH_INTERVAL_S, stop_flag)
 
     logger.info("Shutting down")
     shm.invalidate()
