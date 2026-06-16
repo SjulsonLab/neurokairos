@@ -969,26 +969,39 @@ def write_chrony_conf(
 
 
 def _reload_chrony(reload_chrony: bool) -> None:
-    """Reload chrony config via systemctl reload (SIGHUP).
+    """Reload chrony config, falling back to restart if reload is unsupported.
 
-    chronyc reload sources does not update poll parameters for existing
-    sources.  SIGHUP (systemctl reload chrony) forces a full config re-read
-    including minpoll/maxpoll changes, without losing the frequency model.
+    Prefers `systemctl reload` (SIGHUP) which re-reads the full config without
+    losing the frequency model.  Falls back to `systemctl restart` on systems
+    where chrony's service unit has no ExecReload defined (e.g. some Debian
+    chrony 4.x packages), because systemctl reload returns non-zero in that
+    case and we must not leave the daemon with a stale config.
     """
     if not reload_chrony:
         return
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["systemctl", "reload", "chrony"],
             capture_output=True, timeout=10,
         )
-        # systemctl reload returns as soon as SIGHUP is delivered, but chrony
-        # processes it asynchronously.  Chrony re-initializes its SHM refclock
-        # source as part of SIGHUP handling, clearing valid=0 on the segment.
-        # Wait long enough for chrony to finish that re-init before we write SHM.
-        time.sleep(2)
+        if result.returncode != 0:
+            logger.warning(
+                "systemctl reload chrony failed (rc=%d) — falling back to restart",
+                result.returncode,
+            )
+            subprocess.run(
+                ["systemctl", "restart", "chrony"],
+                capture_output=True, timeout=15,
+            )
+            # Restart takes longer than reload; give chrony time to initialize
+            # before writing SHM (chrony invalidates the SHM segment on init).
+            time.sleep(5)
+        else:
+            # systemctl reload returns as soon as SIGHUP is delivered, but chrony
+            # processes it asynchronously.  Wait for it to re-init the SHM refclock.
+            time.sleep(2)
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-        logger.warning("chrony reload failed: %s", exc)
+        logger.warning("chrony reload/restart failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
