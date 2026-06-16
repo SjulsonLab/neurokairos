@@ -1680,3 +1680,66 @@ def test_r1_fresh_install_writes_initial_managed_block(mod, tmp_path):
         assert srv in conf_text, (
             f"Initial server {srv!r} must appear in the managed block on first run"
         )
+
+
+def test_r2_stale_state_with_empty_conf_writes_initial_managed_block(mod, tmp_path):
+    """When a previous (buggy) daemon run saved last_conf_servers=[] but never
+    wrote the managed block, a new daemon run must still write the initial block.
+
+    This is the migration scenario: state file exists on disk from an old run
+    that used [] as the default, but chrony.conf has no managed block because
+    the write condition was [] != [] = False.
+
+    Fix: additionally guard on `MANAGED_BEGIN not in chrony.conf` so the block
+    is always written when absent, regardless of what last_conf_servers says.
+    """
+    conf = tmp_path / "chrony.conf"
+    conf.write_text(SAMPLE_CONF_WITHOUT_BLOCK)
+
+    class Cfg:
+        shm_segment = 3
+        poll_interval_s = 60
+        hourly_window_s = 3600
+        log_dir = tmp_path / "logs"
+        state_path = tmp_path / "state.json"
+        status_path = tmp_path / "status.json"
+        chrony_conf = conf
+        chronyc_binary = "chronyc"
+        chronyc_timeout_s = 5.0
+        raw_log_retention_h = 72
+        hourly_log_retention_h = 72
+        min_stability_samples = mod.DEFAULT_MIN_STABILITY_SAMPLES
+        cv_threshold = mod.DEFAULT_CV_THRESHOLD
+        override_threshold = mod.DEFAULT_OVERRIDE_THRESHOLD
+        active_pool_size = mod.DEFAULT_ACTIVE_POOL_SIZE
+        frozen_max_age_s = mod.DEFAULT_FROZEN_MAX_AGE_S
+        truth_refids = mod.DEFAULT_TRUTH_REFIDS
+        truth_ips = frozenset()
+        privileged_servers = []
+        reload_chrony = False
+        initial_servers = mod.DEFAULT_INITIAL_SERVERS
+
+    cfg = Cfg()
+    # Simulate stale state from old daemon: last_conf_servers already set to []
+    state = mod._default_state()
+    state["last_conf_servers"] = []   # old buggy saved value
+    seg, _ = _make_shm_segment(mod)
+
+    def _empty_sourcestats(*a, **kw):
+        return {}
+
+    with (
+        patch.object(mod, "run_sourcestats_full", _empty_sourcestats),
+        patch.object(mod, "run_chronyc_tracking", _make_mock_run_tracking(mod)),
+    ):
+        mod._run_hourly_cycle(cfg, state, seg)
+
+    conf_text = conf.read_text()
+    assert mod.MANAGED_BEGIN in conf_text, (
+        "Hourly cycle must write managed block even when last_conf_servers=[] "
+        "if the block is absent from chrony.conf (migration from buggy daemon)"
+    )
+    for srv in mod.DEFAULT_INITIAL_SERVERS:
+        assert srv in conf_text, (
+            f"Initial server {srv!r} must appear in managed block on migration run"
+        )

@@ -1335,7 +1335,16 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
         )
         if n is not None and _manageable(n)
     ]
-    if new_conf_servers != state.get("last_conf_servers"):
+    # Also force a write when the managed block is absent — handles migrations
+    # from an old daemon run that saved last_conf_servers=[] (the buggy default)
+    # without ever writing the block.
+    try:
+        conf_text = cfg.chrony_conf.read_text()
+    except OSError:
+        conf_text = ""
+    managed_block_missing = MANAGED_BEGIN not in conf_text
+
+    if new_conf_servers != state.get("last_conf_servers") or managed_block_missing:
         in_warmup = all(
             s.get("n_hourly_samples", 0) < cfg.min_stability_samples
             for s in server_summaries
