@@ -1612,3 +1612,71 @@ def test_q5_fast_shm_refresh_between_raw_cycles(mod, tmp_path):
         f"Expected ≥{max_iterations} SHM writes in {max_iterations} loop "
         f"iterations (fast refresh between raw cycles), got {len(shm_writes)}"
     )
+
+
+# ===========================================================================
+# Group R — fresh-install bootstrap
+# ===========================================================================
+
+def test_r1_fresh_install_writes_initial_managed_block(mod, tmp_path):
+    """On a fresh install with no servers in chrony.conf, the daemon must write
+    the initial managed block containing DEFAULT_INITIAL_SERVERS on its very
+    first hourly cycle.
+
+    Root cause: _default_state() initialised last_conf_servers to [].  The
+    first hourly cycle computes new_conf_servers=[] (no sources yet) and the
+    guard `new_conf_servers != state["last_conf_servers"]` evaluates to
+    `[] != []` = False, so the managed block write was never triggered.
+
+    Fix: use None (not []) as the sentinel in _default_state() so that the
+    first-run condition is `[] != None` = True.
+    """
+    # chrony.conf with no managed block and no server lines (post-clean-install)
+    conf = tmp_path / "chrony.conf"
+    conf.write_text(SAMPLE_CONF_WITHOUT_BLOCK)
+
+    class Cfg:
+        shm_segment = 3
+        poll_interval_s = 60
+        hourly_window_s = 3600
+        log_dir = tmp_path / "logs"
+        state_path = tmp_path / "state.json"
+        status_path = tmp_path / "status.json"
+        chrony_conf = conf
+        chronyc_binary = "chronyc"
+        chronyc_timeout_s = 5.0
+        raw_log_retention_h = 72
+        hourly_log_retention_h = 72
+        min_stability_samples = mod.DEFAULT_MIN_STABILITY_SAMPLES
+        cv_threshold = mod.DEFAULT_CV_THRESHOLD
+        override_threshold = mod.DEFAULT_OVERRIDE_THRESHOLD
+        active_pool_size = mod.DEFAULT_ACTIVE_POOL_SIZE
+        frozen_max_age_s = mod.DEFAULT_FROZEN_MAX_AGE_S
+        truth_refids = mod.DEFAULT_TRUTH_REFIDS
+        truth_ips = frozenset()
+        privileged_servers = []
+        reload_chrony = False
+        initial_servers = mod.DEFAULT_INITIAL_SERVERS
+
+    cfg = Cfg()
+    state = mod._default_state()
+    seg, _ = _make_shm_segment(mod)
+
+    # No servers visible in chrony — sourcestats returns empty
+    def _empty_sourcestats(*a, **kw):
+        return {}
+
+    with (
+        patch.object(mod, "run_sourcestats_full", _empty_sourcestats),
+        patch.object(mod, "run_chronyc_tracking", _make_mock_run_tracking(mod)),
+    ):
+        mod._run_hourly_cycle(cfg, state, seg)
+
+    conf_text = conf.read_text()
+    assert mod.MANAGED_BEGIN in conf_text, (
+        "Fresh-install hourly cycle must create the managed block in chrony.conf"
+    )
+    for srv in mod.DEFAULT_INITIAL_SERVERS:
+        assert srv in conf_text, (
+            f"Initial server {srv!r} must appear in the managed block on first run"
+        )

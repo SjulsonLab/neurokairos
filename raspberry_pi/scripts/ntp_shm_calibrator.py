@@ -1036,7 +1036,7 @@ def _default_state() -> Dict[str, Any]:
         "last_update_utc": None,
         "frozen_since_utc": None,
         "mode": DaemonMode.WAN_CONSENSUS.value,
-        "last_conf_servers": [],
+        "last_conf_servers": None,
     }
 
 
