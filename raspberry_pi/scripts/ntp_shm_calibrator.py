@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
-"""NTP SHM offset calibration daemon.
+"""NTP offset calibration daemon (WAN-only, no SHM).
 
 Reads per-server offset data from chronyc, maintains rolling hourly averages,
-selects the best NTP server, and writes bias-corrected time to SHM segment 3
-for chrony to consume without restarts.
+selects the best WAN NTP server, and writes calibrated offset terms directly
+into chrony.conf.  No SHM, no refclock WANC, no GNSS dependency.
 
-Source hierarchy:
-  Level 1: GNSS hat (PPS/GPS)                  — highest trust
-  Level 2: Privileged NTP servers (user-set)   — LAN or WAN
-  Level 3: WAN NTP servers                     — chrony picks among these
+Algorithm:
+  Warmup (< MIN_STABILITY_SAMPLES hourly cycles per server):
+    All servers equal, no offsets, no 'prefer'.  chrony picks its own source.
+  Active (post-warmup):
+    Best server selected by stability gate (CV), then stratum, then stdev.
+    That server gets 'prefer' in chrony.conf.  Other servers get 'offset'
+    terms calibrated from their historical mean sourcestats offsets.
+    Offsets are frozen (conf not rewritten) unless server ranking changes.
 
-Architecture:
-  - Every POLL_INTERVAL_S (60 s): collect chronyc stats, log raw sample
-  - Every HOURLY_WINDOW_S (3600 s): aggregate → select server → calibrate
-    offset → write SHM segment 3 → update chrony.conf managed block
-  - Status JSON for web UI written after each hourly update
+Reference outage:
+    If the preferred server is absent from sourcestats for > REFERENCE_TIMEOUT_S,
+    an email alert is sent to NOTIFY_EMAIL.  Alert clears when server returns.
 
 Install as: /usr/local/sbin/ntp_shm_calibrator.py
 Service:    ntp-shm-calibrator.service (Type=simple, User=root)
@@ -23,8 +25,6 @@ Service:    ntp-shm-calibrator.service (Type=simple, User=root)
 from __future__ import annotations
 
 import argparse
-import ctypes
-import ctypes.util
 import csv
 import enum
 import ipaddress
@@ -33,12 +33,14 @@ import logging
 import os
 import re
 import signal
+import smtplib
 import statistics
 import subprocess
 import sys
 import threading
 import time
 from datetime import datetime, timezone
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -46,10 +48,6 @@ from typing import Any, Dict, List, Optional, Tuple
 # Constants
 # ---------------------------------------------------------------------------
 
-SHM_KEY_BASE = 0x4E545030       # 'NTP0'; segment N key = SHM_KEY_BASE + N
-IPC_CREAT = 0o1000
-
-DEFAULT_SHM_SEGMENT = 3
 DEFAULT_POLL_INTERVAL_S = 60
 DEFAULT_HOURLY_WINDOW_S = 3600
 DEFAULT_LOG_DIR = Path("/var/log/ntp-calibrator")
@@ -64,20 +62,15 @@ DEFAULT_MIN_STABILITY_SAMPLES = 6
 DEFAULT_CV_THRESHOLD = 3.0
 DEFAULT_OVERRIDE_THRESHOLD = 0.20
 DEFAULT_ACTIVE_POOL_SIZE = 3
+DEFAULT_REFERENCE_TIMEOUT_S = 1800   # 30 minutes before sending outage alert
+DEFAULT_NOTIFY_EMAIL: Optional[str] = None
+DEFAULT_SMTP_HOST = "localhost"
+DEFAULT_SMTP_PORT = 25
+
 ACTIVE_MINPOLL = 6
 ACTIVE_MAXPOLL = 6
 NOSELECT_MINPOLL = 7
 NOSELECT_MAXPOLL = 7
-DEFAULT_FROZEN_MAX_AGE_S = 14400   # 4 hours
-DEFAULT_TRUTH_REFIDS = frozenset({"GPS", "PPS"})
-
-# SHM is refreshed at this interval so chrony's 16-second poll (poll=4) always
-# sees a fresh receive_time, keeping WANC reachability at 377 (all 8 bits).
-# The raw cycle takes ~10 s (chronyc calls), creating a gap of
-# SHM_REFRESH_INTERVAL_S + raw_cycle_time between SHM writes.  Empirically,
-# chrony's staleness threshold is ~12-13 s (poll=4), so the gap must stay
-# below that.  2 s gives a worst-case gap of 12 s (2 + 10), which clears it.
-SHM_REFRESH_INTERVAL_S = 2
 
 MANAGED_BEGIN = "# BEGIN ntp-calibrator-managed"
 MANAGED_END = "# END ntp-calibrator-managed"
@@ -102,148 +95,10 @@ POOL_DISCOVERY_LINE = (
     f" minpoll {ACTIVE_MINPOLL} maxpoll {ACTIVE_MAXPOLL} noselect maxsources 4"
 )
 
-# Precision codes (log2 seconds)
-PRECISION_GNSS = -20       # ~1 µs
-PRECISION_CONSENSUS = -15  # ~30 µs
-PRECISION_FROZEN = -10     # ~1 ms
-
 # Minimum raw samples per window to compute a meaningful hourly summary
 _MIN_HOURLY_SAMPLES = 3
 
 logger = logging.getLogger("ntp_shm_calibrator")
-
-
-# ---------------------------------------------------------------------------
-# Daemon operating modes
-# ---------------------------------------------------------------------------
-
-class DaemonMode(enum.Enum):
-    GNSS_ACTIVE = "GNSS_ACTIVE"
-    L2_ACTIVE = "L2_ACTIVE"
-    FROZEN = "FROZEN"
-    WAN_CONSENSUS = "WAN_CONSENSUS"
-
-
-# ---------------------------------------------------------------------------
-# SHM interface (ctypes, no external dependencies)
-# ---------------------------------------------------------------------------
-
-class ShmTimeStruct(ctypes.Structure):
-    """Maps to chrony's shmTime struct used by refclock SHM."""
-    _fields_ = [
-        ("mode",                  ctypes.c_int),
-        ("count",                 ctypes.c_int),
-        ("clockTimeStampSec",     ctypes.c_long),    # time_t (8 bytes on 64-bit)
-        ("clockTimeStampUSec",    ctypes.c_int),
-        # 4 bytes implicit padding for alignment of next c_long
-        ("receiveTimeStampSec",   ctypes.c_long),
-        ("receiveTimeStampUSec",  ctypes.c_int),
-        ("leap",                  ctypes.c_int),
-        ("precision",             ctypes.c_int),
-        ("nsamples",              ctypes.c_int),
-        ("valid",                 ctypes.c_int),
-        ("clockTimeStampNSec",    ctypes.c_uint),
-        ("receiveTimeStampNSec",  ctypes.c_uint),
-        ("dummy",                 ctypes.c_int * 8),
-    ]
-
-
-def _get_libc():
-    lib_name = ctypes.util.find_library("c")
-    libc = ctypes.CDLL(lib_name, use_errno=True)
-    libc.shmget.restype = ctypes.c_int
-    libc.shmat.restype = ctypes.c_void_p
-    libc.shmdt.restype = ctypes.c_int
-    return libc
-
-
-class ShmSegment:
-    """Manages a SysV SHM segment for chrony's refclock SHM protocol."""
-
-    def __init__(self, segment_n: int) -> None:
-        self._key = SHM_KEY_BASE + segment_n
-        self._shmid: Optional[int] = None
-        self._shm_ptr = None
-        self._attached = False
-
-    def open(self) -> None:
-        """Open (create if needed) and attach to the SHM segment."""
-        libc = _get_libc()
-        size = ctypes.sizeof(ShmTimeStruct)
-        shmid = libc.shmget(
-            ctypes.c_int(self._key),
-            ctypes.c_size_t(size),
-            ctypes.c_int(IPC_CREAT | 0o666),
-        )
-        if shmid < 0:
-            errno = ctypes.get_errno()
-            raise OSError(errno, f"shmget failed: {os.strerror(errno)}")
-        self._shmid = shmid
-
-        ptr = libc.shmat(ctypes.c_int(shmid), None, ctypes.c_int(0))
-        err = ctypes.get_errno()
-        if err != 0:
-            raise OSError(err, f"shmat failed: {os.strerror(err)}")
-        if ptr is None:
-            raise RuntimeError("shmat returned NULL unexpectedly")
-
-        self._shm_ptr = ctypes.cast(
-            ctypes.c_void_p(ptr), ctypes.POINTER(ShmTimeStruct)
-        )
-        self._attached = True
-
-    def write_time(
-        self,
-        *,
-        clock_time_s: float,
-        receive_time_s: float,
-        precision: int,
-        leap: int = 0,
-    ) -> None:
-        """Write a bias-corrected time using the mode-1 count-validated protocol.
-
-        clock_time_s: our best estimate of true UTC
-        receive_time_s: system time when the measurement was taken (time.time())
-        """
-        if not self._attached or self._shm_ptr is None:
-            raise RuntimeError("SHM not attached; call open() first")
-
-        s = self._shm_ptr.contents
-
-        # Mode-1 count protocol: increment count (odd) before writing,
-        # then again (even) after. Chrony discards reads where count changed.
-        s.count += 1
-
-        clock_sec = int(clock_time_s)
-        clock_frac = clock_time_s - clock_sec
-        recv_sec = int(receive_time_s)
-        recv_frac = receive_time_s - recv_sec
-
-        s.clockTimeStampSec = clock_sec
-        s.clockTimeStampUSec = int(clock_frac * 1_000_000)
-        s.clockTimeStampNSec = int(clock_frac * 1_000_000_000) & 0xFFFFFFFF
-        s.receiveTimeStampSec = recv_sec
-        s.receiveTimeStampUSec = int(recv_frac * 1_000_000)
-        s.receiveTimeStampNSec = int(recv_frac * 1_000_000_000) & 0xFFFFFFFF
-        s.leap = leap
-        s.precision = precision
-        s.nsamples = 1
-        s.mode = 1
-
-        s.count += 1
-        s.valid = 1
-
-    def invalidate(self) -> None:
-        """Mark the SHM segment as invalid so chrony ignores stale data."""
-        if self._attached and self._shm_ptr is not None:
-            self._shm_ptr.contents.valid = 0
-
-    def close(self) -> None:
-        """Detach from the SHM segment."""
-        if self._attached and self._shm_ptr is not None:
-            _get_libc().shmdt(self._shm_ptr)
-            self._attached = False
-            self._shm_ptr = None
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +135,7 @@ def parse_sourcestats_full(
     """Parse chronyc sources and sourcestats into a per-server dict.
 
     Returns: {ip/name: {name, state_char, stratum, offset_s, std_dev_s, np, nr}}
+    Refclock sources (mode char '#') are excluded — they are not NTP peers.
     """
     # Parse sources: state_char and stratum by IP
     source_info: Dict[str, Dict] = {}
@@ -314,7 +170,7 @@ def parse_sourcestats_full(
             continue
         ip = parts[0]
         if ip not in source_info:
-            continue   # not an NTP source (refclock, or missing from sources output)
+            continue   # not an NTP peer
         try:
             np_val = int(parts[1])
             nr_val = int(parts[2])
@@ -331,7 +187,7 @@ def parse_sourcestats_full(
             "state_char": info.get("state_char", "?"),
             "stratum": info.get("stratum"),
             "offset_s": offset_s,
-            "std_dev_s": abs(std_dev_s),    # stdev is always non-negative
+            "std_dev_s": abs(std_dev_s),
             "np": np_val,
             "nr": nr_val,
         }
@@ -358,74 +214,6 @@ def run_sourcestats_full(
     if src.returncode != 0 or stats.returncode != 0:
         raise RuntimeError("chronyc returned non-zero exit code")
     return parse_sourcestats_full(src.stdout, stats.stdout)
-
-
-def _parse_chronyc_tracking(output: str) -> Dict[str, str]:
-    """Parse chronyc tracking output into a plain dict of string values."""
-    result: Dict[str, str] = {}
-    for line in output.splitlines():
-        m = re.match(r"^([^:]+?)\s*:\s*(.+)$", line.strip())
-        if m:
-            result[m.group(1).strip()] = m.group(2).strip()
-    return result
-
-
-def run_chronyc_tracking(
-    *,
-    chronyc_binary: str = DEFAULT_CHRONYC,
-    timeout_s: float = DEFAULT_CHRONYC_TIMEOUT_S,
-) -> Optional[Dict[str, str]]:
-    """Run chronyc tracking and return parsed dict, or None on failure."""
-    try:
-        result = subprocess.run(
-            [chronyc_binary, "-n", "tracking"],
-            capture_output=True, text=True, timeout=timeout_s,
-        )
-        if result.returncode != 0:
-            return None
-        return _parse_chronyc_tracking(result.stdout)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return None
-
-
-def _extract_ref_id_name(raw_ref_id: str) -> str:
-    """Extract the display name from a ref_id like 'C0A8012A (10.0.0.1)'.
-
-    Returns the name in parentheses if present, else the raw string.
-    """
-    m = re.match(r"^[0-9A-Fa-f]+\s*\(([^)]+)\)$", raw_ref_id.strip())
-    return m.group(1).strip() if m else raw_ref_id.strip()
-
-
-def detect_mode(
-    tracking: Optional[Dict[str, str]],
-    state: Dict[str, Any],
-    truth_refids: frozenset,
-    truth_ips: frozenset,
-) -> DaemonMode:
-    """Determine the daemon's operating mode from the current chrony state."""
-    if not tracking:
-        if state.get("gnss_ever_seen") or state.get("l2_ever_seen"):
-            return DaemonMode.FROZEN
-        return DaemonMode.WAN_CONSENSUS
-
-    raw_ref = tracking.get("Reference ID", "")
-    name = _extract_ref_id_name(raw_ref)
-
-    # Level 1: GNSS
-    if name.upper() in {r.upper() for r in truth_refids}:
-        state["gnss_ever_seen"] = True
-        return DaemonMode.GNSS_ACTIVE
-
-    # Level 2: privileged servers by IP
-    if name in truth_ips or name.upper() in {ip.upper() for ip in truth_ips}:
-        state["l2_ever_seen"] = True
-        return DaemonMode.L2_ACTIVE
-
-    if state.get("gnss_ever_seen") or state.get("l2_ever_seen"):
-        return DaemonMode.FROZEN
-
-    return DaemonMode.WAN_CONSENSUS
 
 
 # ---------------------------------------------------------------------------
@@ -541,9 +329,7 @@ def compute_hourly_summary(
         return None
     offsets = [s["offset_s"] for s in valid]
     mean_off = statistics.mean(offsets)
-    # stdev requires at least 2 values; clamp to 0 for constant series
     stdev_off = statistics.stdev(offsets) if len(offsets) >= 2 else 0.0
-    # Use the most recent stratum value
     stratum = next(
         (s["stratum"] for s in reversed(valid) if s.get("stratum") is not None),
         None,
@@ -567,8 +353,7 @@ def append_hourly_summary(
     """Append one hourly summary row.
 
     role: 'preferred', 'active', 'noselect', or 'warmup'
-    applied_offset_s: the offset term written to chrony.conf for this server
-                      (None for noselect/warmup servers)
+    applied_offset_s: offset term written to chrony.conf (None for noselect/warmup)
     """
     _ensure_dir(log_dir)
     path = log_dir / "hourly.tsv"
@@ -583,8 +368,7 @@ def append_hourly_summary(
             f"{summary['hourly_stdev_s']:.9f}",
             summary["n_samples"],
             summary.get("stratum", ""),
-            tier,
-            role,
+            tier, role,
             f"{applied_offset_s:.9f}" if applied_offset_s is not None else "",
         ])
 
@@ -595,8 +379,7 @@ def load_hourly_window(
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Load hourly summaries for all servers within retention window.
 
-    Returns: {server: [{"timestamp_s", "mean_offset_s", "hourly_stdev_s",
-                        "n_samples", "stratum", "tier"}, ...]}
+    Returns: {server: [{timestamp_s, mean_offset_s, hourly_stdev_s, ...}]}
     """
     path = log_dir / "hourly.tsv"
     if not path.exists():
@@ -701,10 +484,7 @@ def _build_server_summaries(
     for server, entries in hourly_window.items():
         if not entries:
             continue
-        # Exclude invalid servers before they can ever win selection.
-        # WANC (our own SHM refclock) and private/loopback IPs must never
-        # appear as candidates — they would rank #1 (stratum 0, CV=0) and
-        # cause the real best server to be demoted to active without prefer.
+        # Exclude WANC and private/loopback IPs — they must never be candidates.
         if not _is_valid_ntp_server(server):
             continue
         stdev_values = [e["hourly_stdev_s"] for e in entries]
@@ -714,7 +494,6 @@ def _build_server_summaries(
             if entries else 0.0
         )
         cv = compute_cv_stdev(stdev_values, min_samples=min_stability_samples)
-        # stratum: use most recent entry
         stratum = next(
             (e["stratum"] for e in reversed(entries) if e.get("stratum") is not None),
             99,
@@ -744,8 +523,7 @@ def select_servers(
     """Select preferred + active servers using stability-gated stratum ranking.
 
     Returns: (preferred, active_list, noselect_list)
-    preferred is one of the active_pool_size slots.
-    active_list has up to active_pool_size - 1 entries (backups).
+    preferred occupies one of the active_pool_size slots.
     """
     stable = [
         s for s in server_summaries
@@ -758,11 +536,10 @@ def select_servers(
     if not stable:
         return None, [], list(server_summaries)
 
-    # Sort stable servers: tier asc, stratum asc, mean_stdev_s asc
+    # Sort: tier asc, stratum asc, mean_stdev_s asc
     stable_sorted = sorted(stable, key=lambda s: (s["tier"], s["stratum"], s["mean_stdev_s"]))
 
-    # Stratum override: only the second-ranked server can challenge the winner.
-    # This prevents any distant server from leapfrogging via a large stdev advantage.
+    # Only the second-ranked server may challenge the winner via stdev override.
     winner = stable_sorted[0]
     if len(stable_sorted) >= 2:
         candidate = stable_sorted[1]
@@ -780,52 +557,14 @@ def select_servers(
 
 
 # ---------------------------------------------------------------------------
-# Offset calibration
-# ---------------------------------------------------------------------------
-
-def compute_consensus_offset(
-    hourly_summaries: Dict[str, Dict[str, Any]],
-    selected_server: str,
-    min_quorum: int = 3,
-) -> Optional[float]:
-    """Compute the inter-server consensus offset relative to selected_server.
-
-    Returns median of (server_offset - selected_offset) across all servers.
-    Returns None if quorum not met or selected server missing.
-    """
-    if selected_server not in hourly_summaries:
-        return None
-    selected_offset = hourly_summaries[selected_server]["mean_offset_s"]
-    relative = [
-        s["mean_offset_s"] - selected_offset
-        for name, s in hourly_summaries.items()
-    ]
-    if len(relative) < min_quorum:
-        return None
-    return statistics.median(relative)
-
-
-# ---------------------------------------------------------------------------
-# SHM write decision
-# ---------------------------------------------------------------------------
-
-def _shm_precision_for_mode(mode: DaemonMode) -> int:
-    if mode == DaemonMode.GNSS_ACTIVE or mode == DaemonMode.L2_ACTIVE:
-        return PRECISION_GNSS
-    if mode == DaemonMode.WAN_CONSENSUS:
-        return PRECISION_CONSENSUS
-    return PRECISION_FROZEN   # FROZEN
-
-
-# ---------------------------------------------------------------------------
 # Server name validation
 # ---------------------------------------------------------------------------
 
 def _is_valid_ntp_server(name: str) -> bool:
     """Return False for names that must never appear as managed server lines.
 
-    Rejects our own WANC refclock refid and non-global IPs (RFC1918, loopback,
-    link-local). Hostnames are accepted as-is (chrony resolves them).
+    Rejects the legacy WANC refid and non-global IPs (RFC1918, loopback,
+    link-local). Hostnames are accepted; chrony resolves them.
     """
     if name.upper() == "WANC":
         return False
@@ -833,19 +572,14 @@ def _is_valid_ntp_server(name: str) -> bool:
         ip = ipaddress.ip_address(name)
         return ip.is_global
     except ValueError:
-        return True  # hostname; chrony will resolve it
+        return True  # hostname
 
 
 def _read_managed_server_set(conf_path: Path) -> frozenset:
     """Return the validated set of server names in the current managed block.
 
-    Called at daemon startup to establish which servers the daemon is
-    authorised to individually manage. Pool.ntp.org member IPs that the
-    daemon mistakenly wrote before this fix will be filtered out if they
-    have never been in the original managed block — but since we can't
-    distinguish them by IP alone, we accept whatever is currently valid
-    and non-private. The manual conf cleanup done before deploying this
-    version ensures pool members are already removed.
+    Called at startup to establish which servers the daemon may manage
+    individually. Re-derived on every start so manual edits are respected.
     """
     try:
         content = conf_path.read_text()
@@ -950,7 +684,6 @@ def write_chrony_conf(
     if found:
         content = "".join(before) + "".join(new_block) + "".join(after)
     else:
-        # No managed block yet — append at end
         content = original
         if original and not original.endswith("\n"):
             content += "\n"
@@ -971,11 +704,10 @@ def write_chrony_conf(
 def _reload_chrony(reload_chrony: bool) -> None:
     """Reload chrony config, falling back to restart if reload is unsupported.
 
-    Prefers `systemctl reload` (SIGHUP) which re-reads the full config without
-    losing the frequency model.  Falls back to `systemctl restart` on systems
-    where chrony's service unit has no ExecReload defined (e.g. some Debian
-    chrony 4.x packages), because systemctl reload returns non-zero in that
-    case and we must not leave the daemon with a stale config.
+    Prefers `systemctl reload` (SIGHUP). Falls back to `systemctl restart`
+    on systems where chrony's service unit has no ExecReload defined (e.g.
+    Debian chrony 4.3 on this Pi), because systemctl reload returns non-zero
+    in that case and a full restart is needed to apply the new conf.
     """
     if not reload_chrony:
         return
@@ -993,15 +725,48 @@ def _reload_chrony(reload_chrony: bool) -> None:
                 ["systemctl", "restart", "chrony"],
                 capture_output=True, timeout=15,
             )
-            # Restart takes longer than reload; give chrony time to initialize
-            # before writing SHM (chrony invalidates the SHM segment on init).
+            # Restart takes longer; give chrony time to initialize.
             time.sleep(5)
         else:
-            # systemctl reload returns as soon as SIGHUP is delivered, but chrony
-            # processes it asynchronously.  Wait for it to re-init the SHM refclock.
+            # reload returns when SIGHUP is delivered; chrony processes it async.
             time.sleep(2)
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
         logger.warning("chrony reload/restart failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Reference server outage notification
+# ---------------------------------------------------------------------------
+
+def send_reference_alert(
+    server: str,
+    since_utc: str,
+    recipient: str,
+    smtp_host: str = DEFAULT_SMTP_HOST,
+    smtp_port: int = DEFAULT_SMTP_PORT,
+) -> bool:
+    """Send an email when the preferred NTP server has been unreachable.
+
+    Returns True on success, False on failure (caller logs the error).
+    Uses localhost:25 by default; configure an msmtp/ssmtp relay on the Pi.
+    """
+    msg = EmailMessage()
+    msg["Subject"] = f"NTP alert: preferred server {server!r} unreachable"
+    msg["From"] = "ntp-calibrator@localhost"
+    msg["To"] = recipient
+    msg.set_content(
+        f"The preferred NTP reference server {server!r} has been unreachable\n"
+        f"since {since_utc} (UTC).\n\n"
+        "The calibration daemon is still running and chrony will fall back to\n"
+        "backup servers.  Calibrated offsets are frozen until the server returns.\n"
+    )
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as s:
+            s.send_message(msg)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to send reference alert to %s: %s", recipient, exc)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1010,25 +775,20 @@ def _reload_chrony(reload_chrony: bool) -> None:
 
 def write_status_json(
     path: Path,
-    mode: DaemonMode,
+    in_warmup: bool,
     preferred_server: Optional[Dict[str, Any]],
     active_servers: List[Dict[str, Any]],
     noselect_servers: List[Dict[str, Any]],
-    privileged_servers: List[str],
-    calibration_basis: str,
-    frozen_since_utc: Optional[str],
+    reference_alert_since_utc: Optional[str],
 ) -> None:
     """Write status.json for the web UI."""
     payload = {
         "last_update_utc": _utc_now_iso(),
-        "mode": mode.value,
-        "ground_truth_source": None,
+        "mode": "warmup" if in_warmup else "active",
         "preferred_server": preferred_server,
         "active_servers": active_servers,
         "noselect_servers": noselect_servers,
-        "privileged_servers": privileged_servers,
-        "calibration_basis": calibration_basis,
-        "frozen_since_utc": frozen_since_utc,
+        "reference_alert_since_utc": reference_alert_since_utc,
     }
     _ensure_dir(path.parent)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -1042,14 +802,11 @@ def write_status_json(
 
 def _default_state() -> Dict[str, Any]:
     return {
-        "gnss_ever_seen": False,
-        "l2_ever_seen": False,
         "preferred_server": None,
-        "last_bias_s": None,
+        "preferred_server_last_seen_utc": None,
         "last_update_utc": None,
-        "frozen_since_utc": None,
-        "mode": DaemonMode.WAN_CONSENSUS.value,
-        "last_conf_servers": None,
+        "last_conf_servers": None,   # None sentinel so first run writes the block
+        "reference_alert_sent_utc": None,
     }
 
 
@@ -1063,7 +820,7 @@ def load_state(path: Path) -> Dict[str, Any]:
 
 def save_state(state: Dict[str, Any], path: Path) -> None:
     """Atomically write daemon state to JSON."""
-    # Strip runtime-only keys that can't be serialised
+    # Strip runtime-only keys (prefixed with '_') — they are not serialisable
     serialisable = {k: v for k, v in state.items() if not k.startswith("_")}
     _ensure_dir(path.parent)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -1092,7 +849,7 @@ def _server_info_for_ui(
     cv = s.get("cv_stdev")
     return {
         "name": s["name"],
-        "ip": s["name"],    # IP or hostname; resolved by web UI if needed
+        "ip": s["name"],
         "tier": s.get("tier", 3),
         "stratum": s.get("stratum"),
         "mean_offset_ms": round(s.get("mean_offset_s", 0.0) * 1000, 4),
@@ -1101,64 +858,6 @@ def _server_info_for_ui(
         "stable": cv is not None and cv < cv_threshold,
         "state_char": s.get("state_char", "?"),
     }
-
-
-def _run_raw_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
-    """Single 60-second raw logging cycle.
-
-    Collects chronyc sourcestats and appends one row per server to the
-    daily raw log. On failure, marks SHM as invalid.
-    """
-    try:
-        sourcestats = run_sourcestats_full(
-            chronyc_binary=cfg.chronyc_binary,
-            timeout_s=cfg.chronyc_timeout_s,
-        )
-    except RuntimeError as exc:
-        logger.warning("sourcestats failed: %s", exc)
-        shm.invalidate()
-        return
-
-    tracking = run_chronyc_tracking(
-        chronyc_binary=cfg.chronyc_binary,
-        timeout_s=cfg.chronyc_timeout_s,
-    )
-    mode = detect_mode(tracking, state, cfg.truth_refids, cfg.truth_ips)
-
-    for ip, srv in sourcestats.items():
-        append_raw_sample(
-            cfg.log_dir, ip,
-            srv["offset_s"], srv["std_dev_s"],
-            srv.get("stratum"), srv["state_char"],
-            srv["np"], srv["nr"],
-        )
-
-    state["_last_sourcestats"] = sourcestats
-    state["_last_mode"] = mode
-
-    # Refresh SHM every raw cycle so that WANC reachability recovers within
-    # one raw-cycle interval after any chrony reload, not one full hour.
-    # Chrony clears SHM valid=0 when processing SIGHUP; without this refresh
-    # WANC would stay at reachability=0 for up to 3600 s.
-    bias_s = state.get("last_bias_s")
-    if bias_s is not None:
-        precision = _shm_precision_for_mode(mode)
-        now = time.time()
-        try:
-            shm.write_time(
-                clock_time_s=now - bias_s,
-                receive_time_s=now,
-                precision=precision,
-            )
-            logger.info(
-                "SHM refreshed: bias_s=%.6f precision=%d valid_after=%d",
-                bias_s, precision, shm._shm_ptr[0].valid,
-            )
-        except RuntimeError as exc:
-            logger.warning("SHM refresh failed in raw cycle: %s", exc)
-            shm.invalidate()
-    else:
-        logger.debug("raw cycle: skipping SHM refresh (last_bias_s is None)")
 
 
 def _servers_in_raw_logs(log_dir: Path, window_s: float) -> set:
@@ -1183,19 +882,45 @@ def _servers_in_raw_logs(log_dir: Path, window_s: float) -> set:
     return servers
 
 
-def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
+def _run_raw_cycle(cfg: Any, state: Dict[str, Any]) -> None:
+    """Single 60-second raw logging cycle.
+
+    Collects chronyc sourcestats, appends one row per server to the daily
+    raw log, and updates preferred_server_last_seen_utc if the preferred
+    server is present in the current sourcestats.
+    """
+    try:
+        sourcestats = run_sourcestats_full(
+            chronyc_binary=cfg.chronyc_binary,
+            timeout_s=cfg.chronyc_timeout_s,
+        )
+    except RuntimeError as exc:
+        logger.warning("sourcestats failed: %s", exc)
+        return
+
+    for ip, srv in sourcestats.items():
+        append_raw_sample(
+            cfg.log_dir, ip,
+            srv["offset_s"], srv["std_dev_s"],
+            srv.get("stratum"), srv["state_char"],
+            srv["np"], srv["nr"],
+        )
+
+    state["_last_sourcestats"] = sourcestats
+
+    # Track when we last saw the preferred server in active sourcestats.
+    preferred = state.get("preferred_server")
+    if preferred and preferred in sourcestats:
+        state["preferred_server_last_seen_utc"] = _utc_now_iso()
+
+
+def _run_hourly_cycle(cfg: Any, state: Dict[str, Any]) -> None:
     """Hourly aggregation cycle.
 
-    Computes summaries from raw logs, writes them to hourly.tsv (with
-    role + applied_offset_s once server selection is known), then updates
-    SHM, chrony.conf, and status JSON.
+    Computes summaries from raw logs, selects servers, updates chrony.conf
+    with per-server offset terms, checks reference server outage, and writes
+    the status JSON.
     """
-    tracking = run_chronyc_tracking(
-        chronyc_binary=cfg.chronyc_binary,
-        timeout_s=cfg.chronyc_timeout_s,
-    )
-    mode = detect_mode(tracking, state, cfg.truth_refids, cfg.truth_ips)
-
     # Use injected hourly window if present (for testing without raw log files)
     if "_hourly_window_override" in state:
         hourly_window = {
@@ -1211,9 +936,9 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
             ] * cfg.min_stability_samples  # enough to pass stability gate
             for server, s in state["_hourly_window_override"].items()
         }
-        new_summaries: Dict[str, Any] = {}  # don't write log in override mode
+        new_summaries: Dict[str, Any] = {}
     else:
-        # Step 1: compute new hourly summaries from raw logs (in memory)
+        # Step 1: compute new hourly summaries from raw logs
         new_summaries = {}
         for server in _servers_in_raw_logs(cfg.log_dir, cfg.hourly_window_s):
             samples = load_raw_samples(cfg.log_dir, server, cfg.hourly_window_s)
@@ -1221,18 +946,17 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
             if summary is not None:
                 new_summaries[server] = summary
 
-        # Step 2: load existing 72h window and merge new entries (in memory)
+        # Step 2: merge into rolling 72h window
         existing = load_hourly_window(cfg.log_dir, cfg.hourly_log_retention_h)
         hourly_window = dict(existing)
         for server, summary in new_summaries.items():
-            tier = 2 if server in getattr(cfg, "truth_ips", frozenset()) else 3
             entry = {
                 "timestamp_s": time.time(),
                 "mean_offset_s": summary["mean_offset_s"],
                 "hourly_stdev_s": summary["hourly_stdev_s"],
                 "n_samples": summary["n_samples"],
                 "stratum": summary.get("stratum"),
-                "tier": tier,
+                "tier": 3,
             }
             hourly_window.setdefault(server, []).append(entry)
 
@@ -1243,7 +967,7 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
     server_summaries = _build_server_summaries(
         hourly_window,
         current_sourcestats,
-        frozenset(cfg.truth_ips),
+        frozenset(),   # no privileged IPs in WAN-only mode
         cfg.min_stability_samples,
     )
 
@@ -1271,75 +995,32 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
                 role_map[s["name"]] = ("noselect", None)
 
         for server, summary in new_summaries.items():
-            tier = 2 if server in getattr(cfg, "truth_ips", frozenset()) else 3
             if in_warmup_for_log:
                 role, applied = "warmup", None
             else:
                 role, applied = role_map.get(server, ("noselect", None))
-            append_hourly_summary(cfg.log_dir, server, summary, tier, role, applied)
+            append_hourly_summary(cfg.log_dir, server, summary, 3, role, applied)
 
         rotate_hourly_log(cfg.log_dir, cfg.hourly_log_retention_h)
 
+    in_warmup = (
+        all(s.get("n_hourly_samples", 0) < cfg.min_stability_samples
+            for s in server_summaries)
+        if server_summaries else True
+    )
+
     logger.info(
-        "hourly cycle: mode=%s servers=%d preferred=%s",
-        mode.value, len(server_summaries),
+        "hourly cycle: warmup=%s servers=%d preferred=%s",
+        in_warmup, len(server_summaries),
         preferred["name"] if preferred else None,
     )
 
-    # --- Compute bias for SHM ---
-    bias_s: Optional[float] = None
-    calibration_basis = "frozen"
-
-    if mode in (DaemonMode.GNSS_ACTIVE, DaemonMode.L2_ACTIVE):
-        calibration_basis = "gnss" if mode == DaemonMode.GNSS_ACTIVE else "l2"
-        if preferred is not None:
-            bias_s = preferred.get("mean_offset_s", 0.0)
-        state["last_bias_s"] = bias_s
-        state["frozen_since_utc"] = None
-
-    elif mode == DaemonMode.WAN_CONSENSUS:
-        calibration_basis = "consensus"
-        # Build flat summaries dict keyed by server
-        flat = {s["name"]: {"mean_offset_s": s["mean_offset_s"]} for s in server_summaries}
-        selected = preferred["name"] if preferred else None
-        logger.info(
-            "consensus: flat=%d selected=%s selected_in_flat=%s",
-            len(flat), selected, selected in flat if selected else False,
-        )
-        if selected:
-            bias_s = compute_consensus_offset(flat, selected, min_quorum=3)
-        if bias_s is not None:
-            state["last_bias_s"] = bias_s
-        state["frozen_since_utc"] = None
-
-    else:  # FROZEN
-        calibration_basis = "frozen"
-        if state.get("frozen_since_utc") is None:
-            state["frozen_since_utc"] = _utc_now_iso()
-        bias_s = state.get("last_bias_s")
-        # Check age
-        if state.get("frozen_since_utc"):
-            try:
-                frozen_ts = datetime.fromisoformat(
-                    state["frozen_since_utc"].replace("Z", "+00:00")
-                ).timestamp()
-                if time.time() - frozen_ts > cfg.frozen_max_age_s:
-                    bias_s = None  # too old, stop writing
-            except (ValueError, TypeError):
-                pass
-
     # --- Update chrony.conf ---
-    # Only servers that are valid AND in the managed set go into conf.
-    # This prevents WANC, private IPs, and pool.ntp.org member IPs from
-    # appearing as individual server lines alongside the pool directive.
     managed_set = state.get("_managed_server_set", frozenset())
 
     def _manageable(name: str) -> bool:
         return _is_valid_ntp_server(name) and (not managed_set or name in managed_set)
 
-    # Exclude pool member IPs from the comparison key so that pool churn
-    # (different IPs returned by pool.ntp.org each cycle) does not trigger a
-    # chrony reload.  Only servers that actually appear in chrony.conf matter.
     new_conf_servers = [
         n for n in (
             [preferred["name"] if preferred else None]
@@ -1348,9 +1029,6 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
         )
         if n is not None and _manageable(n)
     ]
-    # Also force a write when the managed block is absent — handles migrations
-    # from an old daemon run that saved last_conf_servers=[] (the buggy default)
-    # without ever writing the block.
     try:
         conf_text = cfg.chrony_conf.read_text()
     except OSError:
@@ -1358,11 +1036,6 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
     managed_block_missing = MANAGED_BEGIN not in conf_text
 
     if new_conf_servers != state.get("last_conf_servers") or managed_block_missing:
-        in_warmup = all(
-            s.get("n_hourly_samples", 0) < cfg.min_stability_samples
-            for s in server_summaries
-        ) if server_summaries else True
-
         if in_warmup:
             initial = getattr(cfg, "initial_servers", DEFAULT_INITIAL_SERVERS)
             block_lines = [
@@ -1397,41 +1070,51 @@ def _run_hourly_cycle(cfg: Any, state: Dict[str, Any], shm: ShmSegment) -> None:
         except OSError as exc:
             logger.error("chrony.conf write failed: %s", exc)
 
-    # --- Write SHM (after any chrony reload that would reset the valid flag) ---
-    # chrony re-initializes its SHM refclock on SIGHUP and clears valid=0, so
-    # the SHM write must happen after the reload or WANC stays at reachability=0.
-    precision = _shm_precision_for_mode(mode)
-    now = time.time()
-    if bias_s is not None:
-        try:
-            shm.write_time(
-                clock_time_s=now - bias_s,
-                receive_time_s=now,
-                precision=precision,
+    # --- Reference server outage detection ---
+    preferred_name = preferred["name"] if preferred else state.get("preferred_server")
+    state["preferred_server"] = preferred_name
+
+    notify_email = getattr(cfg, "notify_email", None)
+    if preferred_name and notify_email:
+        last_seen_str = state.get("preferred_server_last_seen_utc")
+        absent = False
+        if last_seen_str:
+            try:
+                last_seen_ts = datetime.fromisoformat(
+                    last_seen_str.replace("Z", "+00:00")
+                ).timestamp()
+                absent = (time.time() - last_seen_ts > cfg.reference_timeout_s)
+            except (ValueError, TypeError):
+                pass
+
+        if absent and not state.get("reference_alert_sent_utc"):
+            sent = send_reference_alert(
+                preferred_name,
+                last_seen_str or "unknown",
+                notify_email,
+                smtp_host=getattr(cfg, "smtp_host", DEFAULT_SMTP_HOST),
+                smtp_port=getattr(cfg, "smtp_port", DEFAULT_SMTP_PORT),
             )
-            logger.info("SHM written: bias_s=%.6f precision=%d", bias_s, precision)
-        except RuntimeError as exc:
-            logger.error("SHM write failed: %s", exc)
-            shm.invalidate()
-    else:
-        logger.warning("SHM invalidated: bias_s is None (mode=%s)", mode.value)
-        shm.invalidate()
+            if sent:
+                state["reference_alert_sent_utc"] = _utc_now_iso()
+                logger.warning("Reference alert sent for %s", preferred_name)
+        elif not absent and state.get("reference_alert_sent_utc"):
+            # Server returned — clear the alert
+            state["reference_alert_sent_utc"] = None
+            logger.info("Reference server %s returned; alert cleared", preferred_name)
 
     # --- Write status JSON ---
-    state["preferred_server"] = preferred["name"] if preferred else None
-    state["mode"] = mode.value
     state["last_update_utc"] = _utc_now_iso()
 
     try:
         write_status_json(
             path=cfg.status_path,
-            mode=mode,
+            in_warmup=in_warmup,
             preferred_server=_server_info_for_ui(preferred, cfg.cv_threshold) if preferred else None,
             active_servers=[_server_info_for_ui(s, cfg.cv_threshold) for s in active],
             noselect_servers=[_server_info_for_ui(s, cfg.cv_threshold) for s in noselect],
-            privileged_servers=list(cfg.privileged_servers),
-            calibration_basis=calibration_basis,
-            frozen_since_utc=state.get("frozen_since_utc"),
+            reference_alert_since_utc=state.get("preferred_server_last_seen_utc")
+                if state.get("reference_alert_sent_utc") else None,
         )
     except OSError as exc:
         logger.warning("status JSON write failed: %s", exc)
@@ -1443,17 +1126,9 @@ def run_daemon(cfg: Any) -> None:
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
-    shm = ShmSegment(cfg.shm_segment)
-    try:
-        shm.open()
-    except OSError as exc:
-        logger.error("Cannot open SHM segment %d: %s", cfg.shm_segment, exc)
-        sys.exit(1)
 
     state = load_state(cfg.state_path)
-    state.setdefault("last_conf_servers", [])
-    # Read the set of individually managed servers from the current chrony.conf.
-    # This is re-derived on every start so manual conf edits are respected.
+    state.setdefault("last_conf_servers", None)
     state["_managed_server_set"] = _read_managed_server_set(cfg.chrony_conf)
 
     stop_flag = threading.Event()
@@ -1462,25 +1137,22 @@ def run_daemon(cfg: Any) -> None:
 
     last_hourly_s = 0.0
     last_raw_s = 0.0
-    logger.info("NTP SHM calibration daemon started (segment %d)", cfg.shm_segment)
+    logger.info("NTP calibration daemon started")
 
     while not stop_flag.is_set():
         now = time.time()
 
-        # Raw cycle (every poll_interval_s): chronyc calls and raw sample logging
-        run_raw = (now - last_raw_s >= cfg.poll_interval_s)
-        if run_raw:
+        if now - last_raw_s >= cfg.poll_interval_s:
             try:
-                _run_raw_cycle(cfg, state, shm)
-            except Exception as exc:   # pylint: disable=broad-except
+                _run_raw_cycle(cfg, state)
+            except Exception as exc:
                 logger.error("raw cycle error: %s", exc)
             last_raw_s = now
 
-        # Hourly cycle (every hourly_window_s): aggregation, selection, conf update
         if now - last_hourly_s >= cfg.hourly_window_s:
             try:
-                _run_hourly_cycle(cfg, state, shm)
-            except Exception as exc:   # pylint: disable=broad-except
+                _run_hourly_cycle(cfg, state)
+            except Exception as exc:
                 logger.error("hourly cycle error: %s", exc)
             try:
                 save_state(state, cfg.state_path)
@@ -1488,29 +1160,9 @@ def run_daemon(cfg: Any) -> None:
                 logger.warning("state save failed: %s", exc)
             last_hourly_s = now
 
-        # Fast SHM refresh between raw/hourly cycles (every SHM_REFRESH_INTERVAL_S).
-        # Chrony polls every 16 s (poll=4); if receive_time is stale (older than
-        # one poll interval) chrony rejects the sample.  Without this refresh,
-        # only 1 sample per 60 s is accepted, giving 2/8 reachability bits.
-        elif not run_raw:
-            bias_s = state.get("last_bias_s")
-            if bias_s is not None:
-                mode = state.get("_last_mode", DaemonMode.WAN_CONSENSUS)
-                t = time.time()
-                try:
-                    shm.write_time(
-                        clock_time_s=t - bias_s,
-                        receive_time_s=t,
-                        precision=_shm_precision_for_mode(mode),
-                    )
-                except RuntimeError:
-                    shm.invalidate()
-
-        _interruptible_sleep(SHM_REFRESH_INTERVAL_S, stop_flag)
+        _interruptible_sleep(cfg.poll_interval_s, stop_flag)
 
     logger.info("Shutting down")
-    shm.invalidate()
-    shm.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1519,16 +1171,12 @@ def run_daemon(cfg: Any) -> None:
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="NTP SHM offset calibration daemon"
+        description="NTP offset calibration daemon (WAN-only, no SHM)"
     )
-    p.add_argument("--shm-segment", type=int, default=DEFAULT_SHM_SEGMENT,
-                   help="SHM segment number (default: %(default)s)")
     p.add_argument("--poll-interval", dest="poll_interval_s", type=float,
-                   default=DEFAULT_POLL_INTERVAL_S,
-                   help="Raw sample collection interval in seconds (default: %(default)s)")
+                   default=DEFAULT_POLL_INTERVAL_S)
     p.add_argument("--hourly-window", dest="hourly_window_s", type=float,
-                   default=DEFAULT_HOURLY_WINDOW_S,
-                   help="Aggregation window in seconds (default: %(default)s)")
+                   default=DEFAULT_HOURLY_WINDOW_S)
     p.add_argument("--log-dir", type=Path, default=DEFAULT_LOG_DIR)
     p.add_argument("--state-path", type=Path, default=DEFAULT_STATE_PATH)
     p.add_argument("--status-path", type=Path, default=DEFAULT_STATUS_PATH)
@@ -1546,25 +1194,18 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--override-threshold", type=float,
                    default=DEFAULT_OVERRIDE_THRESHOLD)
     p.add_argument("--active-pool-size", type=int, default=DEFAULT_ACTIVE_POOL_SIZE)
-    p.add_argument("--frozen-max-age-s", type=float, default=DEFAULT_FROZEN_MAX_AGE_S)
-    p.add_argument("--truth-refids", nargs="*",
-                   default=list(DEFAULT_TRUTH_REFIDS),
-                   help="Reference IDs treated as Level 1 (GNSS) truth")
-    p.add_argument("--truth-ips", nargs="*", default=[],
-                   help="Server IPs/names treated as Level 2 (privileged) truth")
-    p.add_argument("--privileged-servers", nargs="*", default=[],
-                   help="Level 2 server names for web UI display")
     p.add_argument("--initial-servers", nargs="*",
-                   default=DEFAULT_INITIAL_SERVERS,
-                   help="Servers to include in the managed block from the start")
+                   default=DEFAULT_INITIAL_SERVERS)
     p.add_argument("--no-reload-chrony", dest="reload_chrony",
-                   action="store_false", default=True,
-                   help="Skip chrony reload after conf changes (for testing)")
-    args = p.parse_args(argv)
-    args.truth_refids = frozenset(args.truth_refids)
-    args.truth_ips = frozenset(args.truth_ips)
-    args.privileged_servers = list(args.privileged_servers)
-    return args
+                   action="store_false", default=True)
+    p.add_argument("--notify-email", default=DEFAULT_NOTIFY_EMAIL,
+                   help="Email address for reference server outage alerts")
+    p.add_argument("--smtp-host", default=DEFAULT_SMTP_HOST)
+    p.add_argument("--smtp-port", type=int, default=DEFAULT_SMTP_PORT)
+    p.add_argument("--reference-timeout-s", type=float,
+                   default=DEFAULT_REFERENCE_TIMEOUT_S,
+                   help="Seconds a preferred server must be absent before alerting")
+    return p.parse_args(argv)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
