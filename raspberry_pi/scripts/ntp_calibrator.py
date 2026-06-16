@@ -578,6 +578,8 @@ def _run_calibration_loop(config: dict, state: dict, log_path: str) -> dict:
     lan_servers = config.get("lan_servers", [])
     conf_path = config.get("chrony_conf_path", "/etc/chrony/chrony.conf")
     poll = config.get("poll", DEFAULT_POLL)
+    ntfy_cfg = (load_ntfy_config(config["ntfy_config_path"])
+                if config.get("ntfy_config_path") else None)
 
     start = time.monotonic()
     logger.info("Calibration started; running for %.0fs", duration)
@@ -616,6 +618,23 @@ def _run_calibration_loop(config: dict, state: dict, log_path: str) -> dict:
     state["reference_tier"] = reference_tier
     state["calibrated_offsets"] = calibrated_offsets
     logger.info("Calibration complete; reference=%s tier=%s", reference_server, reference_tier)
+
+    if ntfy_cfg:
+        offset_lines = "\n".join(
+            f"  {srv}: {offset_s * 1000:+.3f} ms"
+            for srv, offset_s in calibrated_offsets.items()
+        )
+        send_ntfy(
+            ntfy_cfg,
+            title="NTP calibration complete",
+            message=(
+                f"Reference: {reference_server} (tier={reference_tier})\n"
+                f"Calibrated offsets:\n{offset_lines}"
+            ),
+            priority="default",
+            tags="white_check_mark",
+        )
+
     return state
 
 
