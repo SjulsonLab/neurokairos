@@ -203,19 +203,79 @@ def compute_server_stats(samples: list, min_samples: int = DEFAULT_MIN_SAMPLES) 
     return result
 
 
+def compute_stdev_stats(samples: list, min_samples: int = DEFAULT_MIN_SAMPLES) -> dict:
+    """Compute mean, stdev, and CV of the sourcestats Std Dev column per server.
+
+    Each sample must have {"server": str, "stdev_s": float}.
+    Returns {server: {"mean_stdev_s": float, "stdev_of_stdev_s": float, "cv": float, "n": int}}.
+    CV = stdev_of_stdev_s / mean_stdev_s; used for the stability gate in server scoring.
+    Servers with < min_samples are excluded.
+    """
+    by_server: dict = {}
+    for s in samples:
+        by_server.setdefault(s["server"], []).append(s["stdev_s"])
+
+    result = {}
+    for srv, vals in by_server.items():
+        n = len(vals)
+        if n < min_samples:
+            continue
+        m = mean(vals)
+        sd = stdev(vals) if n > 1 else 0.0
+        cv = sd / m if m > 0 else 0.0
+        result[srv] = {"mean_stdev_s": m, "stdev_of_stdev_s": sd, "cv": cv, "n": n}
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Group F — select_reference_server
 # ---------------------------------------------------------------------------
 
-def select_reference_server(stats: dict) -> Optional[str]:
-    """Return the server with the lowest stdev as the calibration reference.
+# Stratum penalty factors for composite score.
+# A stratum-2 server must have a 25% better raw score to beat stratum 1.
+# Stratum 3 is strongly disfavored; stratum 4+ is effectively excluded.
+_STRATUM_FACTORS = {1: 1.0, 2: 4 / 3, 3: 4.0}
+_STRATUM_FACTOR_DEFAULT = 10.0
+_CV_GATE = 2.0  # servers with CV >= this are excluded
 
-    Returns None when stats is empty. The reference server's offset is
-    defined as 0 — all backup offsets are expressed relative to it.
+
+def compute_composite_score(mean_stdev_s: float, cv: float, stratum: int) -> float:
+    """Return the composite server quality score (lower = better).
+
+    score = mean_stdev_s * (1 + cv) * stratum_factor
+    Returns inf when cv >= _CV_GATE (server is too erratic to trust).
     """
-    if not stats:
+    if cv >= _CV_GATE:
+        return float("inf")
+    factor = _STRATUM_FACTORS.get(stratum, _STRATUM_FACTOR_DEFAULT)
+    return mean_stdev_s * (1 + cv) * factor
+
+
+def score_servers(stdev_stats: dict, strata: dict) -> dict:
+    """Compute composite scores for all servers in stdev_stats.
+
+    stdev_stats: output of compute_stdev_stats.
+    strata: {server: stratum_int} from parse_sources.
+    Returns {server: composite_score}.
+    Servers missing from strata are treated as high-stratum (factor 10.0).
+    """
+    result = {}
+    for srv, info in stdev_stats.items():
+        stratum = strata.get(srv, 4)  # unknown → high penalty
+        result[srv] = compute_composite_score(info["mean_stdev_s"], info["cv"], stratum)
+    return result
+
+
+def select_reference_server(scores: dict) -> Optional[str]:
+    """Return the server with the lowest finite composite score.
+
+    scores: {server: composite_score} — output of score_servers.
+    Returns None when scores is empty or all scores are inf.
+    """
+    finite = {s: v for s, v in scores.items() if v < float("inf")}
+    if not finite:
         return None
-    return min(stats, key=lambda s: stats[s]["stdev_s"])
+    return min(finite, key=lambda s: finite[s])
 
 
 # ---------------------------------------------------------------------------
@@ -262,19 +322,21 @@ def build_server_line(server: str, is_reference: bool, is_noselect: bool,
 # Group O — select_active_servers
 # ---------------------------------------------------------------------------
 
-def select_active_servers(stats: dict, active_pool_size: int = 3):
-    """Split stats into active (top-N by stdev) and noselect (the rest).
+def select_active_servers(scores: dict, active_pool_size: int = 3):
+    """Split servers into active (top-N by composite score) and noselect (the rest).
 
-    Returns (active_stats, noselect_servers) where:
-      active_stats  — dict {server: stat} for the top active_pool_size servers
-      noselect_servers — set of server names that didn't make the cut
+    scores: {server: composite_score} — output of score_servers.
+    CV-gated servers (score == inf) always go to noselect regardless of pool_size.
+    Returns (active_servers, noselect_servers) as a pair of sets.
     """
-    if not stats:
-        return {}, set()
-    sorted_servers = sorted(stats, key=lambda s: stats[s]["stdev_s"])
-    active_keys = sorted_servers[:active_pool_size]
-    noselect_keys = sorted_servers[active_pool_size:]
-    return {s: stats[s] for s in active_keys}, set(noselect_keys)
+    if not scores:
+        return set(), set()
+    finite = {s: v for s, v in scores.items() if v < float("inf")}
+    gated = set(scores) - set(finite)
+    sorted_finite = sorted(finite, key=lambda s: finite[s])
+    active = set(sorted_finite[:active_pool_size])
+    noselect = set(sorted_finite[active_pool_size:]) | gated
+    return active, noselect
 
 
 # ---------------------------------------------------------------------------
@@ -283,12 +345,14 @@ def select_active_servers(stats: dict, active_pool_size: int = 3):
 
 def build_calibrated_conf_lines(reference_server: str, calibrated_offsets: dict,
                                  noselect_servers: set,
-                                 poll: int = DEFAULT_POLL) -> list:
+                                 poll: int = DEFAULT_POLL,
+                                 noselect_poll: int = 10) -> list:
     """Build the managed-block server lines after a completed calibration.
 
-    calibrated_offsets: {server: offset_s} — servers with enough data.
+    calibrated_offsets: {server: offset_s} — active servers with offset terms.
       The reference server has offset_s == 0.0.
-    noselect_servers: servers without enough data, kept for monitoring.
+    noselect_servers: polled infrequently for monitoring only.
+    noselect_poll: minpoll/maxpoll for noselect servers (default 10 ≈ 17 min).
     """
     lines = []
     for srv, offset_s in calibrated_offsets.items():
@@ -301,7 +365,8 @@ def build_calibrated_conf_lines(reference_server: str, calibrated_offsets: dict,
         ))
     for srv in sorted(noselect_servers):
         lines.append(build_server_line(
-            srv, is_reference=False, is_noselect=True, offset_s=None, poll=poll
+            srv, is_reference=False, is_noselect=True, offset_s=None,
+            poll=noselect_poll,
         ))
     return lines
 
@@ -414,8 +479,10 @@ def default_state() -> dict:
         "reference_server": None,
         "reference_tier": None,
         "calibrated_offsets": {},
+        "calibration_composite_score": None,
         "frozen_since_utc": None,
         "notified_utc": None,
+        "last_daily_check_utc": None,
     }
 
 
@@ -500,6 +567,76 @@ def update_freeze_state(state: dict, is_reachable: bool,
             state["notified_utc"] = None
 
     return state
+
+
+# ---------------------------------------------------------------------------
+# Group S — check_daily_criteria
+# ---------------------------------------------------------------------------
+
+# Threshold multipliers / absolute limits for daily re-evaluation.
+_CRIT1_SCORE_FACTOR = 2.0    # criterion 1: reference score > N× calibration baseline
+_CRIT2_OFFSET_DRIFT_S = 5e-4  # criterion 2: active server offset drift threshold (0.5 ms)
+_CRIT3_SCORE_RATIO = 0.75    # criterion 3: non-reference score < this fraction of reference
+
+
+def check_daily_criteria(state: dict, current_scores: dict,
+                          calibrated_offsets_now: dict) -> list:
+    """Return a list of triggered daily-check criterion numbers (1, 2, 3).
+
+    Criterion 1: reference composite score has degraded beyond 2× its calibration baseline.
+    Criterion 2: any active server's current mean offset has drifted >0.5 ms from calibrated.
+    Criterion 3: any non-reference server scores better than 75% of the reference score
+                 (i.e., a different server would be a substantially better reference).
+    """
+    reference = state.get("reference_server")
+    baseline = state.get("calibration_composite_score")
+    calibrated_offsets = state.get("calibrated_offsets", {})
+    triggered = []
+
+    # Criterion 1 — reference performance degraded
+    ref_score = current_scores.get(reference, float("inf"))
+    if baseline and ref_score > _CRIT1_SCORE_FACTOR * baseline:
+        triggered.append(1)
+
+    # Criterion 2 — active server offset drift
+    for srv, cal_offset in calibrated_offsets.items():
+        if srv == reference:
+            continue
+        now_offset = calibrated_offsets_now.get(srv)
+        if now_offset is not None and abs(now_offset - cal_offset) > _CRIT2_OFFSET_DRIFT_S:
+            triggered.append(2)
+            break  # one trigger is enough
+
+    # Criterion 3 — a non-reference server is substantially better
+    threshold = ref_score * _CRIT3_SCORE_RATIO
+    for srv, score in current_scores.items():
+        if srv != reference and score < threshold:
+            triggered.append(3)
+            break
+
+    return triggered
+
+
+# ---------------------------------------------------------------------------
+# Group T — log_daily_evaluation
+# ---------------------------------------------------------------------------
+
+def log_daily_evaluation(log_path: str, timestamp: float, server_scores: dict,
+                          stdev_stats: dict, offset_drifts: dict) -> None:
+    """Append one JSONL record to the daily evaluation log.
+
+    Each record captures a timestamped snapshot of all server quality metrics,
+    composite scores, and offset drifts from calibration. Designed for
+    post-hoc threshold tuning across multiple deployments.
+    """
+    record = {
+        "timestamp": timestamp,
+        "server_scores": {k: v for k, v in server_scores.items()},
+        "stdev_stats": stdev_stats,
+        "offset_drifts": offset_drifts,
+    }
+    with open(log_path, "a") as f:
+        f.write(json.dumps(record) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -596,18 +733,31 @@ def _run_calibration_loop(config: dict, state: dict, log_path: str) -> dict:
 
     since = time.time() - duration
     samples = load_samples(log_path, since)
-    server_stats = compute_server_stats(samples, min_samples)
-    reference_server = select_reference_server(server_stats)
+
+    # Offset stats — for computing chrony.conf offset correction terms.
+    offset_stats = compute_server_stats(samples, min_samples)
+    # Stdev stats — for composite scoring and server selection.
+    stdev_stats = compute_stdev_stats(samples, min_samples)
+
+    sources = parse_sources(run_chronyc_sources())
+    strata = {srv: info["stratum"] for srv, info in sources.items()}
+    scores = score_servers(stdev_stats, strata)
+    reference_server = select_reference_server(scores)
 
     if reference_server is None:
         logger.error("No stable servers found after calibration; will retry")
         return state
 
+    ref_score = scores[reference_server]
     active_pool_size = config.get("active_pool_size", 3)
-    active_stats, noselect_servers = select_active_servers(server_stats, active_pool_size)
-    calibrated_offsets = compute_relative_offsets(active_stats, reference_server)
-    lines = build_calibrated_conf_lines(reference_server, calibrated_offsets,
-                                         noselect_servers=noselect_servers, poll=poll)
+    noselect_poll = config.get("noselect_poll", 10)
+    active_servers, noselect_servers = select_active_servers(scores, active_pool_size)
+    active_offset_stats = {s: offset_stats[s] for s in active_servers if s in offset_stats}
+    calibrated_offsets = compute_relative_offsets(active_offset_stats, reference_server)
+    lines = build_calibrated_conf_lines(
+        reference_server, calibrated_offsets,
+        noselect_servers=noselect_servers, poll=poll, noselect_poll=noselect_poll,
+    )
     write_managed_block(conf_path, lines)
     restart_chrony()
 
@@ -617,7 +767,9 @@ def _run_calibration_loop(config: dict, state: dict, log_path: str) -> dict:
     state["reference_server"] = reference_server
     state["reference_tier"] = reference_tier
     state["calibrated_offsets"] = calibrated_offsets
-    logger.info("Calibration complete; reference=%s tier=%s", reference_server, reference_tier)
+    state["calibration_composite_score"] = ref_score
+    logger.info("Calibration complete; reference=%s score=%.3fus tier=%s",
+                reference_server, ref_score * 1e6, reference_tier)
 
     if ntfy_cfg:
         offset_lines = "\n".join(
@@ -628,7 +780,8 @@ def _run_calibration_loop(config: dict, state: dict, log_path: str) -> dict:
             ntfy_cfg,
             title="NTP calibration complete",
             message=(
-                f"Reference: {reference_server} (tier={reference_tier})\n"
+                f"Reference: {reference_server} (score={ref_score*1e6:.1f}µs "
+                f"tier={reference_tier})\n"
                 f"Calibrated offsets:\n{offset_lines}"
             ),
             priority="default",
@@ -638,10 +791,65 @@ def _run_calibration_loop(config: dict, state: dict, log_path: str) -> dict:
     return state
 
 
+def _run_daily_check(config: dict, state: dict, log_path: str,
+                      ntfy_cfg: Optional[dict]) -> dict:
+    """Run the daily re-evaluation: score all servers, check criteria, notify if needed."""
+    daily_log_path = config.get("daily_log_path",
+                                 "/var/log/ntp-calibrator/daily_eval.jsonl")
+    min_samples_daily = config.get("min_samples_daily", 30)
+
+    now_ts = time.time()
+    samples = load_samples(log_path, now_ts - 86400)
+    stdev_stats = compute_stdev_stats(samples, min_samples_daily)
+    offset_stats = compute_server_stats(samples, min_samples_daily)
+
+    sources = parse_sources(run_chronyc_sources())
+    strata = {srv: info["stratum"] for srv, info in sources.items()}
+    current_scores = score_servers(stdev_stats, strata)
+
+    reference = state.get("reference_server")
+    calibrated = state.get("calibrated_offsets", {})
+    now_offsets = {srv: offset_stats[srv]["mean_offset_s"]
+                   for srv in calibrated if srv in offset_stats}
+    offset_drifts = {srv: now_offsets.get(srv, 0.0) - calibrated.get(srv, 0.0)
+                     for srv in calibrated}
+
+    criteria = check_daily_criteria(state, current_scores, now_offsets)
+    log_daily_evaluation(daily_log_path, now_ts, current_scores, stdev_stats, offset_drifts)
+
+    if criteria and ntfy_cfg:
+        ref_score = current_scores.get(reference, float("inf"))
+        score_lines = "\n".join(
+            f"  {srv}: {sc * 1e6:.1f}µs composite"
+            for srv, sc in sorted(current_scores.items(), key=lambda x: x[1])
+            if sc < float("inf")
+        )
+        criteria_desc = {
+            1: f"Reference '{reference}' composite score degraded "
+               f"({ref_score*1e6:.1f}µs vs calibration "
+               f"{state.get('calibration_composite_score', 0)*1e6:.1f}µs baseline)",
+            2: "Active server offset has drifted >0.5 ms from calibrated value",
+            3: "A non-reference server is now substantially better than the reference",
+        }
+        msg = "\n".join(criteria_desc[c] for c in sorted(criteria))
+        msg += f"\n\nCurrent server scores:\n{score_lines}"
+        msg += "\n\nConsider running with --recalibrate to update server selection."
+        send_ntfy(ntfy_cfg, title="NTP calibration needs attention",
+                  message=msg, priority="high", tags="warning")
+        logger.warning("Daily check: criteria %s triggered", criteria)
+    else:
+        logger.info("Daily check complete; no criteria triggered")
+
+    state = dict(state)
+    state["last_daily_check_utc"] = datetime.now(timezone.utc).isoformat()
+    return state
+
+
 def _run_monitoring_loop(config: dict, state: dict, log_path: str) -> None:
-    """Continuously monitor reference reachability; notify on prolonged loss."""
+    """Continuously monitor reference reachability; run daily re-evaluation."""
     poll_s = config.get("poll_interval_s", DEFAULT_POLL_INTERVAL_S)
     freeze_timeout_s = config.get("freeze_timeout_s", DEFAULT_FREEZE_TIMEOUT_S)
+    daily_check_interval_s = config.get("daily_check_interval_s", 86400)
     state_path = config.get("state_path", "/var/lib/ntp-calibrator/state.json")
     ntfy_cfg = (load_ntfy_config(config["ntfy_config_path"])
                 if config.get("ntfy_config_path") else None)
@@ -673,6 +881,14 @@ def _run_monitoring_loop(config: dict, state: dict, log_path: str) -> None:
         now_ts = time.time()
         for srv, info in raw.items():
             log_sample(log_path, now_ts, srv, info["offset_s"], info["stdev_s"])
+
+        # Daily re-evaluation
+        last_check_utc = state.get("last_daily_check_utc")
+        last_check_ts = (
+            _parse_iso_utc(last_check_utc).timestamp() if last_check_utc else 0.0
+        )
+        if now_ts - last_check_ts >= daily_check_interval_s:
+            state = _run_daily_check(config, state, log_path, ntfy_cfg)
 
         save_state(state, state_path)
         time.sleep(poll_s)

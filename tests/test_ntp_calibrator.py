@@ -413,25 +413,32 @@ def test_e5_empty_samples(mod):
 # Group F — select_reference_server
 # ---------------------------------------------------------------------------
 
-def test_f1_picks_lowest_stdev(mod):
-    """Server with lowest stdev selected as reference."""
-    stats = {
-        "1.1.1.1": {"mean_offset_s": 0.0, "stdev_s": 100e-6, "n": 10},
-        "2.2.2.2": {"mean_offset_s": 0.0, "stdev_s": 50e-6, "n": 10},
-        "3.3.3.3": {"mean_offset_s": 0.0, "stdev_s": 200e-6, "n": 10},
-    }
-    assert mod.select_reference_server(stats) == "2.2.2.2"
+def test_f1_picks_lowest_composite_score(mod):
+    """Server with lowest composite score selected as reference."""
+    scores = {"1.1.1.1": 100e-6, "2.2.2.2": 50e-6, "3.3.3.3": 200e-6}
+    assert mod.select_reference_server(scores) == "2.2.2.2"
 
 
-def test_f2_empty_stats_returns_none(mod):
-    """Empty stats returns None."""
+def test_f2_empty_scores_returns_none(mod):
+    """Empty scores dict returns None."""
     assert mod.select_reference_server({}) is None
 
 
 def test_f3_single_server(mod):
-    """Single server is selected as reference."""
-    stats = {"1.1.1.1": {"mean_offset_s": 0.0, "stdev_s": 100e-6, "n": 10}}
-    assert mod.select_reference_server(stats) == "1.1.1.1"
+    """Single finite-scored server is selected as reference."""
+    assert mod.select_reference_server({"1.1.1.1": 60e-6}) == "1.1.1.1"
+
+
+def test_f4_inf_score_not_selected_when_alternative_exists(mod):
+    """CV-gated server (inf score) is never chosen when a finite-score server exists."""
+    scores = {"good.com": 60e-6, "gated.com": float("inf")}
+    assert mod.select_reference_server(scores) == "good.com"
+
+
+def test_f5_all_inf_returns_none(mod):
+    """All servers gated (inf score) → returns None."""
+    scores = {"a.com": float("inf"), "b.com": float("inf")}
+    assert mod.select_reference_server(scores) is None
 
 
 # ---------------------------------------------------------------------------
@@ -908,47 +915,353 @@ def test_n5_all_server_names_in_output(mod):
 
 
 # ---------------------------------------------------------------------------
-# Group O — select_active_servers (limits calibrated pool to top-N)
+# Group O — select_active_servers (limits calibrated pool to top-N by score)
 # ---------------------------------------------------------------------------
 
 def test_o1_limits_to_active_pool_size(mod):
-    """Only top active_pool_size servers get calibrated; rest are noselect."""
-    stats = {
-        "a.com": {"mean_offset_s": 0.0, "stdev_s": 30e-6, "n": 10},  # best
-        "b.com": {"mean_offset_s": 0.0, "stdev_s": 60e-6, "n": 10},
-        "c.com": {"mean_offset_s": 0.0, "stdev_s": 90e-6, "n": 10},
-        "d.com": {"mean_offset_s": 0.0, "stdev_s": 120e-6, "n": 10},  # worst
+    """Only top active_pool_size servers by composite score are active."""
+    scores = {
+        "a.com": 30e-6,   # best
+        "b.com": 60e-6,
+        "c.com": 90e-6,
+        "d.com": 120e-6,  # worst
     }
-    active, noselect = mod.select_active_servers(stats, active_pool_size=2)
+    active, noselect = mod.select_active_servers(scores, active_pool_size=2)
     assert len(active) == 2
-    assert "a.com" in active  # lowest stdev always in active
+    assert "a.com" in active
     assert "d.com" in noselect
 
 
-def test_o2_reference_always_in_active(mod):
-    """The reference server (lowest stdev) is always in the active set."""
-    stats = {
-        "best.com": {"mean_offset_s": 0.0, "stdev_s": 30e-6, "n": 10},
-        "ok.com":   {"mean_offset_s": 0.0, "stdev_s": 60e-6, "n": 10},
-        "bad.com":  {"mean_offset_s": 0.0, "stdev_s": 200e-6, "n": 10},
-    }
-    active, noselect = mod.select_active_servers(stats, active_pool_size=2)
+def test_o2_best_server_always_in_active(mod):
+    """The best-scoring server is always in the active set."""
+    scores = {"best.com": 30e-6, "ok.com": 60e-6, "bad.com": 200e-6}
+    active, noselect = mod.select_active_servers(scores, active_pool_size=2)
     assert "best.com" in active
 
 
 def test_o3_all_active_when_pool_size_exceeds_count(mod):
     """When pool_size >= number of servers, noselect is empty."""
-    stats = {
-        "a.com": {"mean_offset_s": 0.0, "stdev_s": 30e-6, "n": 10},
-        "b.com": {"mean_offset_s": 0.0, "stdev_s": 60e-6, "n": 10},
-    }
-    active, noselect = mod.select_active_servers(stats, active_pool_size=5)
+    scores = {"a.com": 30e-6, "b.com": 60e-6}
+    active, noselect = mod.select_active_servers(scores, active_pool_size=5)
     assert len(active) == 2
     assert noselect == set()
 
 
-def test_o4_empty_stats_returns_empty(mod):
-    """Empty stats → empty active and noselect."""
+def test_o4_empty_scores_returns_empty(mod):
+    """Empty scores → empty active and noselect."""
     active, noselect = mod.select_active_servers({}, active_pool_size=3)
-    assert active == {}
+    assert len(active) == 0
     assert noselect == set()
+
+
+def test_o5_inf_scored_servers_always_noselect(mod):
+    """CV-gated servers (inf score) always go to noselect regardless of pool size."""
+    scores = {"good.com": 60e-6, "gated.com": float("inf")}
+    active, noselect = mod.select_active_servers(scores, active_pool_size=3)
+    assert "good.com" in active
+    assert "gated.com" in noselect
+
+
+# ---------------------------------------------------------------------------
+# Group N — additional: noselect_poll parameter
+# ---------------------------------------------------------------------------
+
+def test_n6_noselect_servers_use_separate_poll(mod):
+    """Noselect servers use noselect_poll, not the active poll."""
+    offsets = {"1.1.1.1": 0.0}
+    lines = mod.build_calibrated_conf_lines(
+        reference_server="1.1.1.1",
+        calibrated_offsets=offsets,
+        noselect_servers={"2.2.2.2"},
+        poll=6,
+        noselect_poll=10,
+    )
+    ref_line = next(l for l in lines if "1.1.1.1" in l)
+    noselect_line = next(l for l in lines if "2.2.2.2" in l)
+    assert "minpoll 6" in ref_line
+    assert "minpoll 10" in noselect_line
+    assert "maxpoll 10" in noselect_line
+
+
+# ---------------------------------------------------------------------------
+# Group P — compute_stdev_stats
+# ---------------------------------------------------------------------------
+
+def _make_samples_stdev(server, stdev_s_values, base_ts=1_000_000.0):
+    """Build sample dicts with explicit per-sample stdev_s values."""
+    return [
+        {"server": server, "offset_s": 0.0, "stdev_s": s,
+         "timestamp": base_ts + i * 60}
+        for i, s in enumerate(stdev_s_values)
+    ]
+
+
+def test_p1_mean_stdev(mod):
+    """mean_stdev_s is the mean of all stdev_s samples for the server."""
+    samples = _make_samples_stdev("1.2.3.4", [60e-6, 80e-6, 100e-6] * 4)
+    stats = mod.compute_stdev_stats(samples, min_samples=5)
+    assert abs(stats["1.2.3.4"]["mean_stdev_s"] - 80e-6) < 1e-12
+
+
+def test_p2_stdev_of_stdev(mod):
+    """stdev_of_stdev_s is the sample stdev of stdev_s values."""
+    from statistics import stdev
+    vals = [60e-6, 80e-6, 100e-6] * 4
+    samples = _make_samples_stdev("1.2.3.4", vals)
+    stats = mod.compute_stdev_stats(samples, min_samples=5)
+    assert abs(stats["1.2.3.4"]["stdev_of_stdev_s"] - stdev(vals)) < 1e-12
+
+
+def test_p3_cv_is_ratio(mod):
+    """CV = stdev_of_stdev_s / mean_stdev_s."""
+    vals = [60e-6, 80e-6, 100e-6] * 4
+    samples = _make_samples_stdev("1.2.3.4", vals)
+    stats = mod.compute_stdev_stats(samples, min_samples=5)
+    s = stats["1.2.3.4"]
+    assert abs(s["cv"] - s["stdev_of_stdev_s"] / s["mean_stdev_s"]) < 1e-9
+
+
+def test_p4_fewer_than_min_samples_excluded(mod):
+    """Server with < min_samples is excluded from result."""
+    samples = _make_samples_stdev("1.2.3.4", [60e-6, 80e-6])
+    assert mod.compute_stdev_stats(samples, min_samples=5) == {}
+
+
+def test_p5_constant_stdev_gives_zero_variation(mod):
+    """Identical stdev_s values yield stdev_of_stdev ≈ 0 and CV ≈ 0."""
+    samples = _make_samples_stdev("1.2.3.4", [60e-6] * 12)
+    stats = mod.compute_stdev_stats(samples, min_samples=5)
+    assert stats["1.2.3.4"]["stdev_of_stdev_s"] < 1e-15
+    assert stats["1.2.3.4"]["cv"] < 1e-9
+
+
+def test_p6_multiple_servers_independent(mod):
+    """Stats are computed independently for each server."""
+    s1 = _make_samples_stdev("a.com", [60e-6] * 10)
+    s2 = _make_samples_stdev("b.com", [120e-6] * 10)
+    stats = mod.compute_stdev_stats(s1 + s2, min_samples=5)
+    assert abs(stats["a.com"]["mean_stdev_s"] - 60e-6) < 1e-12
+    assert abs(stats["b.com"]["mean_stdev_s"] - 120e-6) < 1e-12
+
+
+def test_p7_empty_samples_returns_empty(mod):
+    """Empty sample list returns empty dict."""
+    assert mod.compute_stdev_stats([], min_samples=5) == {}
+
+
+# ---------------------------------------------------------------------------
+# Group Q — compute_composite_score and score_servers
+# ---------------------------------------------------------------------------
+
+def test_q1_stratum1_cv0_equals_mean_stdev(mod):
+    """Stratum 1, CV=0: score = mean_stdev_s (factor 1.0, no penalty)."""
+    assert abs(mod.compute_composite_score(60e-6, cv=0.0, stratum=1) - 60e-6) < 1e-12
+
+
+def test_q2_stratum2_factor(mod):
+    """Stratum 2: score = mean_stdev_s * (4/3) — requires 25% better raw score to beat stratum 1."""
+    expected = 60e-6 * (4 / 3)
+    assert abs(mod.compute_composite_score(60e-6, cv=0.0, stratum=2) - expected) < 1e-12
+
+
+def test_q3_cv_above_gate_returns_inf(mod):
+    """CV > 2.0 → returns inf (server excluded from selection)."""
+    assert mod.compute_composite_score(60e-6, cv=2.1, stratum=1) == float("inf")
+
+
+def test_q4_cv_at_gate_returns_inf(mod):
+    """CV == 2.0 → returns inf (gate is strict: CV must be strictly < 2.0)."""
+    assert mod.compute_composite_score(60e-6, cv=2.0, stratum=1) == float("inf")
+
+
+def test_q5_stratum3_factor(mod):
+    """Stratum 3: score = mean_stdev_s * 4.0 (strongly disfavored)."""
+    assert abs(mod.compute_composite_score(60e-6, cv=0.0, stratum=3) - 60e-6 * 4.0) < 1e-12
+
+
+def test_q6_stratum4_factor(mod):
+    """Stratum 4+: score = mean_stdev_s * 10.0 (effectively excluded)."""
+    assert abs(mod.compute_composite_score(60e-6, cv=0.0, stratum=4) - 60e-6 * 10.0) < 1e-12
+
+
+def test_q7_cv_penalty(mod):
+    """Non-zero CV multiplies score by (1 + CV)."""
+    assert abs(mod.compute_composite_score(100e-6, cv=0.5, stratum=1) - 100e-6 * 1.5) < 1e-12
+
+
+def test_q8_score_servers_lower_stdev_wins(mod):
+    """score_servers: server with lower mean_stdev gets lower composite score."""
+    stdev_stats = {
+        "a.com": {"mean_stdev_s": 60e-6, "cv": 0.0, "n": 10},
+        "b.com": {"mean_stdev_s": 120e-6, "cv": 0.0, "n": 10},
+    }
+    scores = mod.score_servers(stdev_stats, strata={"a.com": 1, "b.com": 1})
+    assert scores["a.com"] < scores["b.com"]
+
+
+def test_q9_score_servers_cv_gated(mod):
+    """score_servers: server with CV > 2.0 gets inf score."""
+    stdev_stats = {
+        "a.com": {"mean_stdev_s": 60e-6, "cv": 2.5, "n": 10},
+        "b.com": {"mean_stdev_s": 120e-6, "cv": 0.0, "n": 10},
+    }
+    scores = mod.score_servers(stdev_stats, strata={"a.com": 1, "b.com": 1})
+    assert scores["a.com"] == float("inf")
+
+
+def test_q10_score_servers_stratum_applied(mod):
+    """score_servers: same raw stats, stratum 2 gets higher score than stratum 1."""
+    stdev_stats = {
+        "s1.com": {"mean_stdev_s": 60e-6, "cv": 0.0, "n": 10},
+        "s2.com": {"mean_stdev_s": 60e-6, "cv": 0.0, "n": 10},
+    }
+    scores = mod.score_servers(stdev_stats, strata={"s1.com": 1, "s2.com": 2})
+    assert scores["s1.com"] < scores["s2.com"]
+
+
+def test_q11_score_servers_missing_stratum_penalized(mod):
+    """score_servers: server absent from strata dict gets a high-stratum penalty."""
+    stdev_stats = {"unknown.com": {"mean_stdev_s": 60e-6, "cv": 0.0, "n": 10}}
+    scores = mod.score_servers(stdev_stats, strata={})
+    assert scores["unknown.com"] > 60e-6  # penalized vs clean stratum-1 score
+
+
+def test_q12_score_servers_empty(mod):
+    """score_servers: empty input returns empty dict."""
+    assert mod.score_servers({}, {}) == {}
+
+
+# ---------------------------------------------------------------------------
+# Group S — check_daily_criteria
+# ---------------------------------------------------------------------------
+
+def _daily_state(reference_server="ref.com", calibration_score=60e-6,
+                 calibrated_offsets=None):
+    """Minimal MONITORING state for daily-criteria tests."""
+    return {
+        "mode": "MONITORING",
+        "reference_server": reference_server,
+        "calibration_composite_score": calibration_score,
+        "calibrated_offsets": calibrated_offsets or {reference_server: 0.0},
+    }
+
+
+def test_s1_criterion1_fires_when_reference_degraded(mod):
+    """Criterion 1 fires when reference composite score exceeds 2× calibration baseline."""
+    state = _daily_state(calibration_score=60e-6)
+    # 130e-6 > 2 × 60e-6 = 120e-6
+    criteria = mod.check_daily_criteria(state, {"ref.com": 130e-6}, {})
+    assert 1 in criteria
+
+
+def test_s2_criterion1_silent_below_threshold(mod):
+    """Criterion 1 silent when reference score is within 2× baseline."""
+    state = _daily_state(calibration_score=60e-6)
+    # 110e-6 < 2 × 60e-6 = 120e-6
+    criteria = mod.check_daily_criteria(state, {"ref.com": 110e-6}, {})
+    assert 1 not in criteria
+
+
+def test_s3_criterion2_fires_on_offset_drift(mod):
+    """Criterion 2 fires when active server offset drifts > 0.5 ms from calibration."""
+    state = _daily_state(calibrated_offsets={"ref.com": 0.0, "backup.com": 0.0001})
+    # drift = |0.0007 - 0.0001| = 0.6 ms > 0.5 ms
+    now_offsets = {"ref.com": 0.0, "backup.com": 0.0007}
+    criteria = mod.check_daily_criteria(
+        state, {"ref.com": 60e-6, "backup.com": 80e-6}, now_offsets
+    )
+    assert 2 in criteria
+
+
+def test_s4_criterion2_silent_within_threshold(mod):
+    """Criterion 2 silent when offsets within 0.5 ms of calibrated values."""
+    state = _daily_state(calibrated_offsets={"ref.com": 0.0, "backup.com": 0.0001})
+    # drift = |0.0005 - 0.0001| = 0.4 ms < 0.5 ms
+    now_offsets = {"ref.com": 0.0, "backup.com": 0.0005}
+    criteria = mod.check_daily_criteria(
+        state, {"ref.com": 60e-6, "backup.com": 80e-6}, now_offsets
+    )
+    assert 2 not in criteria
+
+
+def test_s5_criterion3_fires_when_scout_substantially_better(mod):
+    """Criterion 3 fires when any non-reference server scores < 75% of reference."""
+    state = _daily_state(reference_server="ref.com")
+    # scout at 50% of reference score — substantially better
+    scores = {"ref.com": 100e-6, "scout.com": 50e-6}
+    criteria = mod.check_daily_criteria(state, scores, {})
+    assert 3 in criteria
+
+
+def test_s6_criterion3_silent_when_alternatives_not_better_enough(mod):
+    """Criterion 3 silent when no non-reference server beats reference by >25%."""
+    state = _daily_state(reference_server="ref.com")
+    # close.com at 80% — not better enough (75% threshold)
+    scores = {"ref.com": 100e-6, "close.com": 80e-6, "worse.com": 120e-6}
+    criteria = mod.check_daily_criteria(state, scores, {})
+    assert 3 not in criteria
+
+
+def test_s7_multiple_criteria_can_fire_together(mod):
+    """Multiple criteria can trigger in the same daily check."""
+    state = _daily_state(
+        calibration_score=60e-6,
+        calibrated_offsets={"ref.com": 0.0, "backup.com": 0.0},
+    )
+    scores = {"ref.com": 200e-6, "scout.com": 30e-6}   # crit 1 and crit 3
+    now_offsets = {"ref.com": 0.0, "backup.com": 0.001}  # crit 2
+    criteria = mod.check_daily_criteria(state, scores, now_offsets)
+    assert 1 in criteria
+    assert 2 in criteria
+    assert 3 in criteria
+
+
+def test_s8_no_criteria_when_healthy(mod):
+    """No criteria fire when reference is healthy and offsets are stable."""
+    state = _daily_state(
+        calibration_score=60e-6,
+        calibrated_offsets={"ref.com": 0.0, "backup.com": 0.0001},
+    )
+    scores = {"ref.com": 70e-6, "backup.com": 90e-6, "worse.com": 200e-6}
+    now_offsets = {"ref.com": 0.0, "backup.com": 0.00015}
+    criteria = mod.check_daily_criteria(state, scores, now_offsets)
+    assert criteria == []
+
+
+# ---------------------------------------------------------------------------
+# Group T — log_daily_evaluation
+# ---------------------------------------------------------------------------
+
+def test_t1_daily_log_appends_jsonl(mod, tmp_path):
+    """log_daily_evaluation appends a parseable JSON line to the log file."""
+    import json as _json
+    log_path = str(tmp_path / "daily_eval.jsonl")
+    mod.log_daily_evaluation(
+        log_path=log_path,
+        timestamp=1_000_000.0,
+        server_scores={"ref.com": 60e-6, "backup.com": 80e-6},
+        stdev_stats={"ref.com": {"mean_stdev_s": 60e-6, "cv": 0.1, "n": 1440}},
+        offset_drifts={"backup.com": 0.0001},
+    )
+    lines = Path(log_path).read_text().splitlines()
+    assert len(lines) == 1
+    row = _json.loads(lines[0])
+    assert row["timestamp"] == 1_000_000.0
+    assert "server_scores" in row
+    assert "stdev_stats" in row
+    assert "offset_drifts" in row
+
+
+def test_t2_daily_log_multiple_appends(mod, tmp_path):
+    """Each call appends one line; N calls → N lines."""
+    log_path = str(tmp_path / "daily_eval.jsonl")
+    for i in range(3):
+        mod.log_daily_evaluation(
+            log_path=log_path,
+            timestamp=float(i),
+            server_scores={},
+            stdev_stats={},
+            offset_drifts={},
+        )
+    lines = Path(log_path).read_text().splitlines()
+    assert len(lines) == 3
