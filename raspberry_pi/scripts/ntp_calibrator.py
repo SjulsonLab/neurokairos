@@ -136,12 +136,20 @@ def parse_sources(text: str) -> dict:
 def parse_tracking(text: str) -> dict:
     """Parse ``chronyc tracking`` output.
 
-    Returns {"ref_id_name": str, "stratum": int, "synchronized": bool}.
-    ref_id_name is the parenthetical name shown by chronyc (e.g. "PPS", "17.253.2.35").
+    Returns a dict with keys:
+      ref_id_name, stratum, synchronized,
+      rms_offset_s, root_delay_s, root_dispersion_s, freq_ppm, update_interval_s
+    Numeric fields are None when the line is absent or unparseable.
+    freq_ppm is positive for "slow", negative for "fast" (chrony convention).
     """
     ref_id_name = ""
     stratum = 0
     synchronized = False
+    rms_offset_s = None
+    root_delay_s = None
+    root_dispersion_s = None
+    freq_ppm = None
+    update_interval_s = None
 
     for line in text.splitlines():
         if line.startswith("Reference ID"):
@@ -154,8 +162,38 @@ def parse_tracking(text: str) -> dict:
                 stratum = int(m.group(1))
         elif line.startswith("Leap status"):
             synchronized = "Normal" in line
+        elif line.startswith("RMS offset"):
+            m = re.search(r":\s+([+-]?\d+(?:\.\d+)?)\s+seconds", line)
+            if m:
+                rms_offset_s = float(m.group(1))
+        elif line.startswith("Root delay"):
+            m = re.search(r":\s+([+-]?\d+(?:\.\d+)?)\s+seconds", line)
+            if m:
+                root_delay_s = float(m.group(1))
+        elif line.startswith("Root dispersion"):
+            m = re.search(r":\s+([+-]?\d+(?:\.\d+)?)\s+seconds", line)
+            if m:
+                root_dispersion_s = float(m.group(1))
+        elif line.startswith("Frequency"):
+            m = re.search(r":\s+([+-]?\d+(?:\.\d+)?)\s+ppm\s+(slow|fast)", line)
+            if m:
+                val = float(m.group(1))
+                freq_ppm = val if m.group(2) == "slow" else -val
+        elif line.startswith("Update interval"):
+            m = re.search(r":\s+([+-]?\d+(?:\.\d+)?)\s+seconds", line)
+            if m:
+                update_interval_s = float(m.group(1))
 
-    return {"ref_id_name": ref_id_name, "stratum": stratum, "synchronized": synchronized}
+    return {
+        "ref_id_name": ref_id_name,
+        "stratum": stratum,
+        "synchronized": synchronized,
+        "rms_offset_s": rms_offset_s,
+        "root_delay_s": root_delay_s,
+        "root_dispersion_s": root_dispersion_s,
+        "freq_ppm": freq_ppm,
+        "update_interval_s": update_interval_s,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -471,22 +509,15 @@ def send_ntfy(config: dict, title: str, message: str,
 # ---------------------------------------------------------------------------
 
 def default_state() -> dict:
-    """Return the initial daemon state for a fresh calibration run."""
+    """Return the initial daemon state."""
     return {
-        "mode": "CALIBRATING",
-        "calibration_start_utc": None,
-        "calibration_complete_utc": None,
-        "reference_server": None,
-        "reference_tier": None,
-        "calibrated_offsets": {},
-        "calibration_composite_score": None,
-        "frozen_since_utc": None,
-        "notified_utc": None,
-        "last_daily_check_utc": None,
+        "mode": "LOGGING",
+        "started_utc": None,
+        "last_heartbeat_utc": None,
     }
 
 
-_VALID_MODES = frozenset({"CALIBRATING", "MONITORING", "FROZEN", "NOTIFIED"})
+_VALID_MODES = frozenset({"LOGGING", "CALIBRATING", "MONITORING", "FROZEN", "NOTIFIED"})
 
 
 def load_state(state_path: str) -> dict:
@@ -666,19 +697,62 @@ def run_chronyc_tracking() -> str:
     return _run_chronyc("tracking")
 
 
-def log_sample(log_path: str, timestamp: float, server: str,
-               offset_s: float, stdev_s: float) -> None:
-    """Append one sample row to the CSV log file."""
+_SAMPLE_HEADER = ["timestamp", "server", "offset_s", "stdev_s", "stratum", "reach", "np"]
+_TRACKING_HEADER = [
+    "timestamp", "ref_id", "stratum", "synchronized",
+    "rms_offset_s", "root_delay_s", "root_dispersion_s", "freq_ppm", "update_interval_s",
+]
+
+
+def _write_csv_row(log_path: str, header: list, row: list) -> None:
+    """Append one row; write header first if the file does not yet exist."""
+    path = Path(log_path)
+    write_header = not path.exists() or path.stat().st_size == 0
     with open(log_path, "a", newline="") as f:
-        csv.writer(f).writerow([timestamp, server, offset_s, stdev_s])
+        w = csv.writer(f)
+        if write_header:
+            w.writerow(header)
+        w.writerow(row)
+
+
+def log_sample(log_path: str, timestamp: float, server: str,
+               offset_s: float, stdev_s: float,
+               stratum: int, reach: int, np_val: int) -> None:
+    """Append one sourcestats row (with stratum/reach/np) to the sample log."""
+    _write_csv_row(log_path, _SAMPLE_HEADER,
+                   [timestamp, server, offset_s, stdev_s, stratum, reach, np_val])
+
+
+def log_tracking_sample(log_path: str, timestamp: float, tracking: dict) -> None:
+    """Append one chrony tracking snapshot to the tracking log."""
+    _write_csv_row(log_path, _TRACKING_HEADER, [
+        timestamp,
+        tracking.get("ref_id_name", ""),
+        tracking.get("stratum", ""),
+        tracking.get("synchronized", ""),
+        tracking.get("rms_offset_s", ""),
+        tracking.get("root_delay_s", ""),
+        tracking.get("root_dispersion_s", ""),
+        tracking.get("freq_ppm", ""),
+        tracking.get("update_interval_s", ""),
+    ])
 
 
 def load_samples(log_path: str, since_timestamp: float) -> list:
-    """Load samples from log CSV written at or after since_timestamp."""
+    """Load samples from log CSV written at or after since_timestamp.
+
+    Handles both the old headerless 4-column format and the new 7-column
+    format with a header row.
+    """
     samples = []
     try:
         with open(log_path, newline="") as f:
             for row in csv.reader(f):
+                if not row:
+                    continue
+                # Skip header row
+                if row[0] == "timestamp":
+                    continue
                 if len(row) < 4:
                     continue
                 try:
@@ -698,8 +772,8 @@ def load_samples(log_path: str, since_timestamp: float) -> list:
     return samples
 
 
-def restart_chrony() -> None:
-    """Restart chrony via systemctl."""
+def restart_chrony() -> None:  # pragma: no cover
+    """Restart chrony via systemctl (used by legacy calibration loop only)."""
     try:
         subprocess.run(["systemctl", "restart", "chrony"], check=True, timeout=30)
         logger.info("chrony restarted")
@@ -707,7 +781,12 @@ def restart_chrony() -> None:
         logger.error("Failed to restart chrony: %s", exc)
 
 
-def _run_calibration_loop(config: dict, state: dict, log_path: str) -> dict:
+# ---------------------------------------------------------------------------
+# Legacy loop functions — kept for reference; not called by run_daemon.
+# These implemented the old CALIBRATING → MONITORING state machine.
+# ---------------------------------------------------------------------------
+
+def _run_calibration_loop(config: dict, state: dict, log_path: str) -> dict:  # pragma: no cover
     """Collect per-server offsets, pick reference, write conf, restart chrony."""
     duration = config.get("calibration_duration_s", DEFAULT_CALIBRATION_DURATION_S)
     poll_s = config.get("poll_interval_s", DEFAULT_POLL_INTERVAL_S)
@@ -791,7 +870,7 @@ def _run_calibration_loop(config: dict, state: dict, log_path: str) -> dict:
     return state
 
 
-def _run_daily_check(config: dict, state: dict, log_path: str,
+def _run_daily_check(config: dict, state: dict, log_path: str,  # pragma: no cover
                       ntfy_cfg: Optional[dict]) -> dict:
     """Run the daily re-evaluation: score all servers, check criteria, notify if needed."""
     daily_log_path = config.get("daily_log_path",
@@ -845,7 +924,7 @@ def _run_daily_check(config: dict, state: dict, log_path: str,
     return state
 
 
-def _run_monitoring_loop(config: dict, state: dict, log_path: str) -> None:
+def _run_monitoring_loop(config: dict, state: dict, log_path: str) -> None:  # pragma: no cover
     """Continuously monitor reference reachability; run daily re-evaluation."""
     poll_s = config.get("poll_interval_s", DEFAULT_POLL_INTERVAL_S)
     freeze_timeout_s = config.get("freeze_timeout_s", DEFAULT_FREEZE_TIMEOUT_S)
@@ -895,38 +974,77 @@ def _run_monitoring_loop(config: dict, state: dict, log_path: str) -> None:
 
 
 def run_daemon(config: dict) -> None:
-    """Top-level daemon entry point."""
+    """Top-level daemon entry point.
+
+    Runs indefinitely as a pure logger: every poll_interval_s seconds it
+    collects chronyc sourcestats, sources, and tracking and appends one row
+    per server to samples.csv and one row to tracking.csv.  No chrony.conf
+    is modified and no server selection is performed.
+    """
     state_path = config.get("state_path", "/var/lib/ntp-calibrator/state.json")
     log_path = config.get("log_path", "/var/log/ntp-calibrator/samples.csv")
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    tracking_log_path = config.get(
+        "tracking_log_path", "/var/log/ntp-calibrator/tracking.csv"
+    )
+    poll_s = config.get("poll_interval_s", DEFAULT_POLL_INTERVAL_S)
+    heartbeat_interval_s = config.get("heartbeat_interval_s", 86400)
 
-    state = load_state(state_path)
-    if config.get("recalibrate"):
-        logger.info("--recalibrate: resetting state")
-        state = default_state()
+    for path in (log_path, tracking_log_path, state_path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
 
-    if state["mode"] == "CALIBRATING":
-        servers = config.get("servers", DEFAULT_SERVERS)
-        pool = config.get("pool", DEFAULT_POOL)
-        conf_path = config.get("chrony_conf_path", "/etc/chrony/chrony.conf")
-        poll = config.get("poll", DEFAULT_POLL)
+    ntfy_cfg = (load_ntfy_config(config["ntfy_config_path"])
+                if config.get("ntfy_config_path") else None)
 
-        initial_lines = [
-            build_server_line(s, is_reference=False, is_noselect=False,
-                              offset_s=None, poll=poll)
-            for s in servers
-        ]
-        if pool:
-            initial_lines.append(
-                f"pool {pool} iburst minpoll {poll} maxpoll {poll} maxsources 4"
+    state = default_state()
+    state["started_utc"] = datetime.now(timezone.utc).isoformat()
+    save_state(state, state_path)
+
+    if ntfy_cfg:
+        send_ntfy(ntfy_cfg,
+                  title="NTP logger started",
+                  message=f"ntp-calibrator logging daemon started on {os.uname().nodename}",
+                  priority="default", tags="satellite")
+
+    logger.info("Logging daemon started; poll_interval=%ss", poll_s)
+
+    while True:
+        now_ts = time.time()
+        now_utc = datetime.now(timezone.utc)
+
+        sourcestats = parse_sourcestats(run_chronyc_sourcestats())
+        sources = parse_sources(run_chronyc_sources())
+        tracking = parse_tracking(run_chronyc_tracking())
+
+        for srv, info in sourcestats.items():
+            src = sources.get(srv, {})
+            log_sample(
+                log_path, now_ts, srv,
+                info["offset_s"], info["stdev_s"],
+                src.get("stratum", 0),
+                src.get("reach", 0),
+                info["np"],
             )
-        write_managed_block(conf_path, initial_lines)
-        state = _run_calibration_loop(config, state, log_path)
-        save_state(state, state_path)
 
-    if state["mode"] in ("MONITORING", "FROZEN", "NOTIFIED"):
-        _run_monitoring_loop(config, state, log_path)
+        log_tracking_sample(tracking_log_path, now_ts, tracking)
+
+        # Daily heartbeat notification
+        last_hb = state.get("last_heartbeat_utc")
+        last_hb_ts = _parse_iso_utc(last_hb).timestamp() if last_hb else 0.0
+        if now_ts - last_hb_ts >= heartbeat_interval_s and ntfy_cfg:
+            sample_count = sum(1 for _ in open(log_path)) if os.path.exists(log_path) else 0
+            send_ntfy(ntfy_cfg,
+                      title="NTP logger heartbeat",
+                      message=(
+                          f"ntp-calibrator running on {os.uname().nodename}\n"
+                          f"Tracking: {tracking.get('ref_id_name', '?')} "
+                          f"(stratum {tracking.get('stratum', '?')})\n"
+                          f"Samples logged: {sample_count}"
+                      ),
+                      priority="default", tags="bar_chart")
+            state["last_heartbeat_utc"] = now_utc.isoformat()
+            save_state(state, state_path)
+
+        time.sleep(poll_s)
 
 
 # ---------------------------------------------------------------------------
