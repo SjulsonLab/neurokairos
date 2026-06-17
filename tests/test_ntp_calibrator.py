@@ -680,7 +680,7 @@ def test_k2b_unrecognized_mode_returns_default(mod, tmp_path):
     path = tmp_path / "state.json"
     path.write_text(json.dumps({"mode": "WAN_CONSENSUS", "preferred_server": "1.2.3.4"}))
     state = mod.load_state(str(path))
-    assert state["mode"] == "CALIBRATING"
+    assert state["mode"] == "LOGGING"
 
 
 def test_k3_roundtrip(mod, tmp_path):
@@ -703,9 +703,9 @@ def test_k4_no_tmp_leftover(mod, tmp_path):
     assert list(tmp_path.glob("*.tmp")) == []
 
 
-def test_k5_default_state_is_calibrating(mod):
-    """default_state() starts in CALIBRATING mode."""
-    assert mod.default_state()["mode"] == "CALIBRATING"
+def test_k5_default_state_is_logging(mod):
+    """default_state() starts in LOGGING mode (pure data collection, no decisions)."""
+    assert mod.default_state()["mode"] == "LOGGING"
 
 
 # ---------------------------------------------------------------------------
@@ -1265,3 +1265,150 @@ def test_t2_daily_log_multiple_appends(mod, tmp_path):
         )
     lines = Path(log_path).read_text().splitlines()
     assert len(lines) == 3
+
+
+# ---------------------------------------------------------------------------
+# Group C (extended) — parse_tracking new fields
+# ---------------------------------------------------------------------------
+
+SAMPLE_TRACKING_FAST = """\
+Reference ID    : 11FD023B (17.253.2.35)
+Stratum         : 2
+Ref time (UTC)  : Sun Jun 15 12:00:00 2026
+System time     : 0.000000050 seconds fast of NTP time
+Last offset     : +0.000000050 seconds
+RMS offset      : 0.000000100 seconds
+Frequency       : 2.500 ppm fast
+Residual freq   : -0.002 ppm
+Skew            : 0.050 ppm
+Root delay      : 0.002000000 seconds
+Root dispersion : 0.000500000 seconds
+Update interval : 128.0 seconds
+Leap status     : Normal
+"""
+
+
+def test_c7_rms_offset_s(mod):
+    """RMS offset parsed to seconds."""
+    result = mod.parse_tracking(SAMPLE_TRACKING_NTP)
+    assert abs(result["rms_offset_s"] - 61e-9) < 1e-15
+
+
+def test_c8_root_delay_s(mod):
+    """Root delay parsed to seconds."""
+    result = mod.parse_tracking(SAMPLE_TRACKING_NTP)
+    assert abs(result["root_delay_s"] - 0.001234567) < 1e-9
+
+
+def test_c9_root_dispersion_s(mod):
+    """Root dispersion parsed to seconds."""
+    result = mod.parse_tracking(SAMPLE_TRACKING_NTP)
+    assert abs(result["root_dispersion_s"] - 0.000234567) < 1e-9
+
+
+def test_c10_freq_ppm_slow_is_positive(mod):
+    """'ppm slow' frequency stored as positive value."""
+    result = mod.parse_tracking(SAMPLE_TRACKING_NTP)
+    assert abs(result["freq_ppm"] - 1.234) < 1e-6
+
+
+def test_c11_freq_ppm_fast_is_negative(mod):
+    """'ppm fast' frequency stored as negative value."""
+    result = mod.parse_tracking(SAMPLE_TRACKING_FAST)
+    assert abs(result["freq_ppm"] - (-2.500)) < 1e-6
+
+
+def test_c12_update_interval_s(mod):
+    """Update interval parsed to seconds (float)."""
+    assert abs(mod.parse_tracking(SAMPLE_TRACKING_NTP)["update_interval_s"] - 64.2) < 1e-6
+    assert abs(mod.parse_tracking(SAMPLE_TRACKING_FAST)["update_interval_s"] - 128.0) < 1e-6
+
+
+def test_c13_none_fields_when_garbage(mod):
+    """Unparseable input returns None for all numeric fields."""
+    result = mod.parse_tracking("not chronyc output")
+    assert result["rms_offset_s"] is None
+    assert result["root_delay_s"] is None
+    assert result["root_dispersion_s"] is None
+    assert result["freq_ppm"] is None
+    assert result["update_interval_s"] is None
+
+
+# ---------------------------------------------------------------------------
+# Group R — log_sample and log_tracking_sample (extended logging)
+# ---------------------------------------------------------------------------
+
+def test_r1_log_sample_header_written_for_new_file(mod, tmp_path):
+    """A CSV header row is written when the log file does not yet exist."""
+    log_path = str(tmp_path / "samples.csv")
+    mod.log_sample(log_path, 1000.0, "time.google.com", 0.0001, 0.0002, 1, 377, 16)
+    with open(log_path) as f:
+        first_line = f.readline().strip()
+    assert first_line.startswith("timestamp")
+
+
+def test_r2_log_sample_no_duplicate_header(mod, tmp_path):
+    """Calling log_sample twice does not write a second header row."""
+    log_path = str(tmp_path / "samples.csv")
+    mod.log_sample(log_path, 1000.0, "time.google.com", 0.0001, 0.0002, 1, 377, 16)
+    mod.log_sample(log_path, 1060.0, "time.google.com", 0.0001, 0.0002, 1, 377, 16)
+    with open(log_path) as f:
+        lines = [l for l in f.read().splitlines() if l.strip()]
+    header_count = sum(1 for l in lines if l.startswith("timestamp"))
+    assert header_count == 1
+    assert len(lines) == 3  # header + 2 data rows
+
+
+def test_r3_log_sample_row_columns(mod, tmp_path):
+    """Data row contains all expected columns in correct order."""
+    import csv as csv_mod
+    log_path = str(tmp_path / "samples.csv")
+    mod.log_sample(log_path, 1781647292.0, "ntp.test.com", -0.000123, 0.000456, 2, 255, 8)
+    with open(log_path, newline="") as f:
+        reader = csv_mod.DictReader(f)
+        row = next(reader)
+    assert float(row["timestamp"]) == pytest.approx(1781647292.0)
+    assert row["server"] == "ntp.test.com"
+    assert float(row["offset_s"]) == pytest.approx(-0.000123)
+    assert float(row["stdev_s"]) == pytest.approx(0.000456)
+    assert int(row["stratum"]) == 2
+    assert int(row["reach"]) == 255
+    assert int(row["np"]) == 8
+
+
+def test_r4_log_tracking_sample_header_for_new_file(mod, tmp_path):
+    """A CSV header row is written when the tracking log does not yet exist."""
+    log_path = str(tmp_path / "tracking.csv")
+    tracking = {
+        "ref_id_name": "17.253.2.35", "stratum": 2, "synchronized": True,
+        "rms_offset_s": 61e-9, "root_delay_s": 0.001, "root_dispersion_s": 0.0002,
+        "freq_ppm": 1.234, "update_interval_s": 64.2,
+    }
+    mod.log_tracking_sample(log_path, 1781647292.0, tracking)
+    with open(log_path) as f:
+        first_line = f.readline().strip()
+    assert first_line.startswith("timestamp")
+
+
+def test_r5_log_tracking_sample_row_columns(mod, tmp_path):
+    """Tracking row contains all expected columns."""
+    import csv as csv_mod
+    log_path = str(tmp_path / "tracking.csv")
+    tracking = {
+        "ref_id_name": "17.253.2.35", "stratum": 2, "synchronized": True,
+        "rms_offset_s": 61e-9, "root_delay_s": 0.001234, "root_dispersion_s": 0.000234,
+        "freq_ppm": -2.5, "update_interval_s": 64.2,
+    }
+    mod.log_tracking_sample(log_path, 1781647292.5, tracking)
+    with open(log_path, newline="") as f:
+        reader = csv_mod.DictReader(f)
+        row = next(reader)
+    assert float(row["timestamp"]) == pytest.approx(1781647292.5)
+    assert row["ref_id"] == "17.253.2.35"
+    assert int(row["stratum"]) == 2
+    assert row["synchronized"] == "True"
+    assert float(row["rms_offset_s"]) == pytest.approx(61e-9, rel=1e-6)
+    assert float(row["root_delay_s"]) == pytest.approx(0.001234, rel=1e-6)
+    assert float(row["root_dispersion_s"]) == pytest.approx(0.000234, rel=1e-6)
+    assert float(row["freq_ppm"]) == pytest.approx(-2.5, rel=1e-6)
+    assert float(row["update_interval_s"]) == pytest.approx(64.2, rel=1e-6)
