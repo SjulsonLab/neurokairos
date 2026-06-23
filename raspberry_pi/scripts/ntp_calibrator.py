@@ -21,9 +21,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from statistics import mean, stdev
+from statistics import mean, median, stdev
 from typing import Optional
 
 logger = logging.getLogger("ntp_calibrator")
@@ -274,7 +275,7 @@ def compute_stdev_stats(samples: list, min_samples: int = DEFAULT_MIN_SAMPLES) -
 # Stratum 3 is strongly disfavored; stratum 4+ is effectively excluded.
 _STRATUM_FACTORS = {1: 1.0, 2: 4 / 3, 3: 4.0}
 _STRATUM_FACTOR_DEFAULT = 10.0
-_CV_GATE = 2.0  # servers with CV >= this are excluded
+_CV_GATE = 3.0  # servers with CV >= this are excluded (WAN NTP stdev varies 10-60× daily)
 
 
 def compute_composite_score(mean_stdev_s: float, cv: float, stratum: int) -> float:
@@ -671,6 +672,137 @@ def log_daily_evaluation(log_path: str, timestamp: float, server_scores: dict,
 
 
 # ---------------------------------------------------------------------------
+# Group U — compute_modal_ref_id
+# ---------------------------------------------------------------------------
+
+def compute_modal_ref_id(tracking_rows: list, start_ts: float, end_ts: float) -> Optional[str]:
+    """Return the most frequent non-empty ref_id within [start_ts, end_ts].
+
+    tracking_rows: list of dicts with "timestamp" (float) and "ref_id" (str).
+    Returns None if no rows fall in the window or all ref_ids are empty.
+    """
+    counts: Counter = Counter()
+    for row in tracking_rows:
+        ts = row.get("timestamp", 0.0)
+        if start_ts <= ts <= end_ts:
+            ref = row.get("ref_id", "")
+            if ref:
+                counts[ref] += 1
+    if not counts:
+        return None
+    return counts.most_common(1)[0][0]
+
+
+# ---------------------------------------------------------------------------
+# Group V — compute_precision_metrics
+# ---------------------------------------------------------------------------
+
+def _percentile(values: list, pct: float) -> float:
+    """Linear-interpolation percentile of a list (pct in 0–100)."""
+    if not values:
+        return float("nan")
+    sorted_vals = sorted(values)
+    k = (len(sorted_vals) - 1) * pct / 100.0
+    lo = int(k)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    frac = k - lo
+    return sorted_vals[lo] * (1.0 - frac) + sorted_vals[hi] * frac
+
+
+def compute_precision_metrics(samples: list, ref_id: str,
+                               window_start_ts: float, window_end_ts: float,
+                               recent_window_s: float = 1800.0) -> dict:
+    """Compute typical, recent, and worst-case stdev for ref_id in the given window.
+
+    samples: list of dicts with "timestamp", "server", "stdev_s".
+    recent_window_s: seconds before window_end_ts to call "recent" (default 30 min).
+    Returns dict with keys typical_stdev_s, recent_stdev_s, worst_case_stdev_s.
+    All values are None when no data is available for ref_id in the window.
+    """
+    window_vals = [
+        s["stdev_s"] for s in samples
+        if s.get("server") == ref_id
+        and window_start_ts <= s.get("timestamp", 0.0) <= window_end_ts
+    ]
+    if not window_vals:
+        return {"typical_stdev_s": None, "recent_stdev_s": None, "worst_case_stdev_s": None}
+
+    recent_start = window_end_ts - recent_window_s
+    recent_vals = [
+        s["stdev_s"] for s in samples
+        if s.get("server") == ref_id
+        and recent_start <= s.get("timestamp", 0.0) <= window_end_ts
+    ]
+
+    return {
+        "typical_stdev_s": median(window_vals),
+        "recent_stdev_s": median(recent_vals) if recent_vals else None,
+        "worst_case_stdev_s": _percentile(window_vals, 95),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Group W — check_source_diversity
+# ---------------------------------------------------------------------------
+
+def check_source_diversity(sources: dict, min_reachable: int = 3,
+                            min_reach: int = 200) -> dict:
+    """Return source diversity status based on reach register values.
+
+    sources: output of parse_sources {server: {reach, state, stratum}}.
+    min_reach: minimum reach value to consider a source reachable (octal 377 = 255 = all polls).
+    Returns {"reachable_count", "is_adequate", "low_reach_servers"}.
+    """
+    reachable = [srv for srv, info in sources.items() if info.get("reach", 0) >= min_reach]
+    low_reach = [srv for srv, info in sources.items() if info.get("reach", 0) < min_reach]
+    return {
+        "reachable_count": len(reachable),
+        "is_adequate": len(reachable) >= min_reachable,
+        "low_reach_servers": low_reach,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Group X — check_stall_indicators
+# ---------------------------------------------------------------------------
+
+# 3× maxpoll-6 (64s) — update_interval above this signals a chrony stall
+STALL_UPDATE_INTERVAL_S = 200.0
+
+# Total calibration window; 2nd half (12-24h) used for server selection and metrics
+CALIBRATION_WINDOW_S = 24 * 3600.0
+
+
+def check_stall_indicators(tracking: dict, prev_tracking: Optional[dict] = None) -> list:
+    """Return a list of stall condition strings from chrony tracking snapshots.
+
+    Conditions:
+      "stall"              — update_interval_s > STALL_UPDATE_INTERVAL_S
+      "source_switch"      — ref_id_name changed vs prev_tracking
+      "dispersion_growing" — root_dispersion_s increased vs prev_tracking
+    prev_tracking is optional; source_switch and dispersion_growing require it.
+    """
+    conditions = []
+
+    update_interval = tracking.get("update_interval_s")
+    if update_interval is not None and update_interval > STALL_UPDATE_INTERVAL_S:
+        conditions.append("stall")
+
+    if prev_tracking is not None:
+        curr_ref = tracking.get("ref_id_name", "")
+        prev_ref = prev_tracking.get("ref_id_name", "")
+        if curr_ref and prev_ref and curr_ref != prev_ref:
+            conditions.append("source_switch")
+
+        curr_disp = tracking.get("root_dispersion_s")
+        prev_disp = prev_tracking.get("root_dispersion_s")
+        if curr_disp is not None and prev_disp is not None and curr_disp > prev_disp:
+            conditions.append("dispersion_growing")
+
+    return conditions
+
+
+# ---------------------------------------------------------------------------
 # Daemon infrastructure (not covered by unit tests — requires chrony / root)
 # ---------------------------------------------------------------------------
 
@@ -770,6 +902,44 @@ def load_samples(log_path: str, since_timestamp: float) -> list:
     except OSError:
         pass
     return samples
+
+
+def load_tracking_samples(log_path: str, since_timestamp: float) -> list:
+    """Load tracking.csv rows at or after since_timestamp.
+
+    Returns list of dicts with keys matching _TRACKING_HEADER.
+    Handles missing files and malformed rows gracefully.
+    """
+    rows = []
+    try:
+        with open(log_path, newline="") as f:
+            for row in csv.reader(f):
+                if not row:
+                    continue
+                if row[0] == "timestamp":
+                    continue
+                if len(row) < 2:
+                    continue
+                try:
+                    ts = float(row[0])
+                    if ts < since_timestamp:
+                        continue
+                    rows.append({
+                        "timestamp": ts,
+                        "ref_id": row[1] if len(row) > 1 else "",
+                        "stratum": int(row[2]) if len(row) > 2 and row[2] else 0,
+                        "synchronized": row[3] == "True" if len(row) > 3 else False,
+                        "rms_offset_s": float(row[4]) if len(row) > 4 and row[4] else None,
+                        "root_delay_s": float(row[5]) if len(row) > 5 and row[5] else None,
+                        "root_dispersion_s": float(row[6]) if len(row) > 6 and row[6] else None,
+                        "freq_ppm": float(row[7]) if len(row) > 7 and row[7] else None,
+                        "update_interval_s": float(row[8]) if len(row) > 8 and row[8] else None,
+                    })
+                except (ValueError, IndexError):
+                    continue
+    except OSError:
+        pass
+    return rows
 
 
 def restart_chrony() -> None:  # pragma: no cover
@@ -1007,6 +1177,10 @@ def run_daemon(config: dict) -> None:
 
     logger.info("Logging daemon started; poll_interval=%ss", poll_s)
 
+    prev_tracking: Optional[dict] = None
+    last_diversity_alert_ts: float = 0.0
+    _DIVERSITY_ALERT_INTERVAL_S = 3600.0
+
     while True:
         now_ts = time.time()
         now_utc = datetime.now(timezone.utc)
@@ -1026,6 +1200,89 @@ def run_daemon(config: dict) -> None:
             )
 
         log_tracking_sample(tracking_log_path, now_ts, tracking)
+
+        # Source diversity check — alert immediately if < 3 sources have reach >= 200
+        diversity = check_source_diversity(sources)
+        if not diversity["is_adequate"]:
+            logger.warning(
+                "Source diversity inadequate: %d sources with reach >= 200 (need 3); "
+                "low-reach: %s",
+                diversity["reachable_count"],
+                ", ".join(diversity["low_reach_servers"]) or "none",
+            )
+            if ntfy_cfg and now_ts - last_diversity_alert_ts >= _DIVERSITY_ALERT_INTERVAL_S:
+                send_ntfy(
+                    ntfy_cfg,
+                    title="NTP source diversity alert",
+                    message=(
+                        f"Only {diversity['reachable_count']} NTP sources reachable on "
+                        f"{os.uname().nodename} (minimum 3). "
+                        "Single-source failure risk elevated."
+                    ),
+                    priority="high",
+                    tags="warning",
+                )
+                last_diversity_alert_ts = now_ts
+
+        # Stall indicator check
+        stall_conditions = check_stall_indicators(tracking, prev_tracking)
+        for condition in stall_conditions:
+            logger.warning(
+                "Stall indicator: %s (update_interval=%.1fs ref=%s)",
+                condition,
+                tracking.get("update_interval_s") or 0.0,
+                tracking.get("ref_id_name", "?"),
+            )
+        prev_tracking = tracking
+
+        # After 24h, compute calibration metrics from the 2nd-half window (hours 12-24)
+        start_ts = _parse_iso_utc(state["started_utc"]).timestamp()
+        if not state.get("calibration_complete") and now_ts - start_ts >= CALIBRATION_WINDOW_S:
+            window_start = start_ts + CALIBRATION_WINDOW_S / 2
+            window_end = start_ts + CALIBRATION_WINDOW_S
+
+            t_rows = load_tracking_samples(tracking_log_path, window_start)
+            modal_ref = compute_modal_ref_id(t_rows, window_start, window_end)
+
+            cal_samples = load_samples(log_path, window_start)
+            cal_samples = [s for s in cal_samples if s["timestamp"] <= window_end]
+            metrics = (
+                compute_precision_metrics(cal_samples, modal_ref, window_start, window_end)
+                if modal_ref
+                else {"typical_stdev_s": None, "recent_stdev_s": None, "worst_case_stdev_s": None}
+            )
+
+            state["calibration_complete"] = True
+            state["calibration_ref_id"] = modal_ref
+            state["precision_typical_ms"] = (
+                metrics["typical_stdev_s"] * 1000 if metrics["typical_stdev_s"] else None
+            )
+            state["precision_recent_ms"] = (
+                metrics["recent_stdev_s"] * 1000 if metrics["recent_stdev_s"] else None
+            )
+            state["precision_worst_case_ms"] = (
+                metrics["worst_case_stdev_s"] * 1000 if metrics["worst_case_stdev_s"] else None
+            )
+            save_state(state, state_path)
+            logger.info(
+                "24h calibration window complete: ref=%s typical=%.3fms worst=%.3fms",
+                modal_ref,
+                state["precision_typical_ms"] or 0.0,
+                state["precision_worst_case_ms"] or 0.0,
+            )
+            if ntfy_cfg and modal_ref:
+                send_ntfy(
+                    ntfy_cfg,
+                    title="NTP calibration metrics ready",
+                    message=(
+                        f"24h calibration complete on {os.uname().nodename}\n"
+                        f"Reference: {modal_ref}\n"
+                        f"Typical precision: {state['precision_typical_ms']:.3f} ms\n"
+                        f"Worst-case precision: {state['precision_worst_case_ms']:.3f} ms"
+                    ),
+                    priority="default",
+                    tags="white_check_mark",
+                )
 
         # Daily heartbeat notification
         last_hb = state.get("last_heartbeat_utc")

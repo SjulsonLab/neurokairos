@@ -1065,13 +1065,13 @@ def test_q2_stratum2_factor(mod):
 
 
 def test_q3_cv_above_gate_returns_inf(mod):
-    """CV > 2.0 → returns inf (server excluded from selection)."""
-    assert mod.compute_composite_score(60e-6, cv=2.1, stratum=1) == float("inf")
+    """CV >= 3.0 → returns inf (server excluded from selection)."""
+    assert mod.compute_composite_score(60e-6, cv=3.1, stratum=1) == float("inf")
 
 
 def test_q4_cv_at_gate_returns_inf(mod):
-    """CV == 2.0 → returns inf (gate is strict: CV must be strictly < 2.0)."""
-    assert mod.compute_composite_score(60e-6, cv=2.0, stratum=1) == float("inf")
+    """CV == 3.0 → returns inf (gate is strict: CV must be strictly < 3.0)."""
+    assert mod.compute_composite_score(60e-6, cv=3.0, stratum=1) == float("inf")
 
 
 def test_q5_stratum3_factor(mod):
@@ -1100,9 +1100,9 @@ def test_q8_score_servers_lower_stdev_wins(mod):
 
 
 def test_q9_score_servers_cv_gated(mod):
-    """score_servers: server with CV > 2.0 gets inf score."""
+    """score_servers: server with CV >= 3.0 gets inf score."""
     stdev_stats = {
-        "a.com": {"mean_stdev_s": 60e-6, "cv": 2.5, "n": 10},
+        "a.com": {"mean_stdev_s": 60e-6, "cv": 3.5, "n": 10},
         "b.com": {"mean_stdev_s": 120e-6, "cv": 0.0, "n": 10},
     }
     scores = mod.score_servers(stdev_stats, strata={"a.com": 1, "b.com": 1})
@@ -1412,3 +1412,313 @@ def test_r5_log_tracking_sample_row_columns(mod, tmp_path):
     assert float(row["root_dispersion_s"]) == pytest.approx(0.000234, rel=1e-6)
     assert float(row["freq_ppm"]) == pytest.approx(-2.5, rel=1e-6)
     assert float(row["update_interval_s"]) == pytest.approx(64.2, rel=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Group Q (extended) — CV gate at 3.0
+# ---------------------------------------------------------------------------
+
+def test_q13_cv_below_gate_returns_finite(mod):
+    """CV < 3.0 → finite composite score (server passes stability gate)."""
+    score = mod.compute_composite_score(60e-6, cv=2.9, stratum=1)
+    assert score < float("inf")
+
+
+# ---------------------------------------------------------------------------
+# Group U — compute_modal_ref_id
+# ---------------------------------------------------------------------------
+
+def _make_tracking_rows(refs, base_ts=1_000_000.0, interval=60.0):
+    """Build minimal tracking row dicts for compute_modal_ref_id tests."""
+    return [
+        {"timestamp": base_ts + i * interval, "ref_id": ref}
+        for i, ref in enumerate(refs)
+    ]
+
+
+def test_u1_clear_winner_returned(mod):
+    """Most frequent ref_id in window is returned."""
+    rows = _make_tracking_rows(["a.com", "a.com", "a.com", "b.com"])
+    result = mod.compute_modal_ref_id(rows, 1_000_000.0, 1_000_000.0 + 300 * 60)
+    assert result == "a.com"
+
+
+def test_u2_out_of_window_rows_excluded(mod):
+    """Rows outside [start_ts, end_ts] do not affect the result."""
+    early = [{"timestamp": 999_000.0, "ref_id": "other.com"}]
+    in_window = _make_tracking_rows(["a.com", "a.com"], base_ts=1_000_000.0)
+    result = mod.compute_modal_ref_id(early + in_window, 1_000_000.0, 1_001_000.0)
+    assert result == "a.com"
+
+
+def test_u3_empty_rows_returns_none(mod):
+    """Empty tracking rows returns None."""
+    assert mod.compute_modal_ref_id([], 1_000_000.0, 1_001_000.0) is None
+
+
+def test_u4_all_empty_ref_ids_returns_none(mod):
+    """Rows with empty ref_id strings are ignored; returns None when all empty."""
+    rows = [{"timestamp": 1_000_000.0, "ref_id": ""}]
+    assert mod.compute_modal_ref_id(rows, 1_000_000.0, 1_001_000.0) is None
+
+
+def test_u5_boundary_timestamps_inclusive(mod):
+    """Rows at exactly start_ts and end_ts are included in the count."""
+    rows = [
+        {"timestamp": 1_000_000.0, "ref_id": "a.com"},
+        {"timestamp": 1_001_000.0, "ref_id": "a.com"},
+    ]
+    result = mod.compute_modal_ref_id(rows, 1_000_000.0, 1_001_000.0)
+    assert result == "a.com"
+
+
+# ---------------------------------------------------------------------------
+# Group V — compute_precision_metrics
+# ---------------------------------------------------------------------------
+
+def _make_precision_samples(server, stdev_values, base_ts=1_000_000.0, interval=60.0):
+    """Build sample dicts with specified stdev_s values for precision metric tests."""
+    return [
+        {"timestamp": base_ts + i * interval, "server": server, "stdev_s": v}
+        for i, v in enumerate(stdev_values)
+    ]
+
+
+def test_v1_typical_is_median(mod):
+    """Typical stdev is the median of all window samples for the server."""
+    samples = _make_precision_samples("a.com", [0.1e-3, 0.2e-3, 0.3e-3, 0.4e-3, 0.5e-3])
+    result = mod.compute_precision_metrics(samples, "a.com", 1_000_000.0, 1_000_000.0 + 600)
+    assert abs(result["typical_stdev_s"] - 0.3e-3) < 1e-9
+
+
+def test_v2_worst_case_is_p95(mod):
+    """Worst-case stdev is the P95 of window samples."""
+    vals = [i * 1e-3 for i in range(1, 21)]   # 1ms .. 20ms, 20 values
+    samples = _make_precision_samples("a.com", vals)
+    result = mod.compute_precision_metrics(samples, "a.com", 1_000_000.0, 1_000_000.0 + 30 * 60)
+    # P95 of 1..20ms: k = 19*0.95 = 18.05 → 19ms*(0.95) + 20ms*(0.05) = 19.05ms
+    assert result["worst_case_stdev_s"] > 18e-3
+
+
+def test_v3_recent_is_median_of_last_window(mod):
+    """Recent stdev is the median of samples within recent_window_s of window_end."""
+    early = _make_precision_samples("a.com", [0.1e-3] * 10, base_ts=1_000_000.0)
+    recent = _make_precision_samples("a.com", [1.0e-3] * 5,
+                                     base_ts=1_000_000.0 + 3600 - 240)
+    result = mod.compute_precision_metrics(
+        early + recent, "a.com", 1_000_000.0, 1_000_000.0 + 3600, recent_window_s=300.0
+    )
+    assert result["recent_stdev_s"] > 0.5e-3
+
+
+def test_v4_no_data_for_ref_id_returns_all_none(mod):
+    """When ref_id has no samples in window, all three metrics are None."""
+    samples = _make_precision_samples("other.com", [0.1e-3] * 5)
+    result = mod.compute_precision_metrics(samples, "a.com", 1_000_000.0, 1_001_000.0)
+    assert result["typical_stdev_s"] is None
+    assert result["recent_stdev_s"] is None
+    assert result["worst_case_stdev_s"] is None
+
+
+def test_v5_no_recent_data_returns_none_for_recent(mod):
+    """recent_stdev_s is None when no samples fall in the recent sub-window."""
+    samples = _make_precision_samples("a.com", [0.1e-3] * 5, base_ts=1_000_000.0)
+    # window spans 1h; recent_window_s=60s cuts off at the last minute.
+    # All 5 samples are in the first 5 minutes → outside the recent window.
+    result = mod.compute_precision_metrics(
+        samples, "a.com", 1_000_000.0, 1_003_600.0, recent_window_s=60.0
+    )
+    assert result["recent_stdev_s"] is None
+
+
+# ---------------------------------------------------------------------------
+# Group W — check_source_diversity
+# ---------------------------------------------------------------------------
+
+def test_w1_three_reachable_sources_adequate(mod):
+    """3 sources with reach >= 200 → is_adequate=True, reachable_count=3."""
+    sources = {
+        "a.com": {"reach": 377, "state": "*", "stratum": 1},
+        "b.com": {"reach": 255, "state": "+", "stratum": 1},
+        "c.com": {"reach": 200, "state": "+", "stratum": 2},
+    }
+    result = mod.check_source_diversity(sources)
+    assert result["is_adequate"] is True
+    assert result["reachable_count"] == 3
+
+
+def test_w2_insufficient_reachable_sources(mod):
+    """Fewer than 3 sources with reach >= 200 → is_adequate=False."""
+    sources = {
+        "a.com": {"reach": 377, "state": "*", "stratum": 1},
+        "b.com": {"reach": 50, "state": "?", "stratum": 1},
+    }
+    result = mod.check_source_diversity(sources)
+    assert result["is_adequate"] is False
+    assert result["reachable_count"] == 1
+
+
+def test_w3_reach_exactly_200_counted(mod):
+    """reach == 200 meets the minimum threshold (inclusive)."""
+    sources = {"a.com": {"reach": 200, "state": "+", "stratum": 1}}
+    result = mod.check_source_diversity(sources, min_reachable=1)
+    assert result["reachable_count"] == 1
+
+
+def test_w4_reach_199_not_counted(mod):
+    """reach == 199 is below threshold and not counted as reachable."""
+    sources = {"a.com": {"reach": 199, "state": "?", "stratum": 1}}
+    result = mod.check_source_diversity(sources, min_reachable=1)
+    assert result["reachable_count"] == 0
+    assert result["is_adequate"] is False
+
+
+def test_w5_empty_sources_inadequate(mod):
+    """Empty sources dict → is_adequate=False, reachable_count=0, no low-reach servers."""
+    result = mod.check_source_diversity({})
+    assert result["is_adequate"] is False
+    assert result["reachable_count"] == 0
+    assert result["low_reach_servers"] == []
+
+
+# ---------------------------------------------------------------------------
+# Group X — check_stall_indicators
+# ---------------------------------------------------------------------------
+
+def _tracking_snap(update_interval=64.2, ref_id="17.253.2.35", root_dispersion=0.0001):
+    """Build a minimal tracking dict for stall indicator tests."""
+    return {
+        "ref_id_name": ref_id,
+        "synchronized": True,
+        "update_interval_s": update_interval,
+        "root_dispersion_s": root_dispersion,
+    }
+
+
+def test_x1_stall_detected_above_threshold(mod):
+    """update_interval_s > 200 → 'stall' in conditions."""
+    conditions = mod.check_stall_indicators(_tracking_snap(update_interval=201.0))
+    assert "stall" in conditions
+
+
+def test_x2_no_stall_at_or_below_threshold(mod):
+    """update_interval_s == 200 → 'stall' not in conditions."""
+    conditions = mod.check_stall_indicators(_tracking_snap(update_interval=200.0))
+    assert "stall" not in conditions
+
+
+def test_x3_none_update_interval_no_stall(mod):
+    """None update_interval_s → 'stall' not in conditions."""
+    t = _tracking_snap()
+    t["update_interval_s"] = None
+    conditions = mod.check_stall_indicators(t)
+    assert "stall" not in conditions
+
+
+def test_x4_source_switch_detected(mod):
+    """ref_id_name change from prev_tracking → 'source_switch' in conditions."""
+    curr = _tracking_snap(ref_id="new.com")
+    prev = _tracking_snap(ref_id="old.com")
+    conditions = mod.check_stall_indicators(curr, prev)
+    assert "source_switch" in conditions
+
+
+def test_x5_no_source_switch_when_same_ref(mod):
+    """Same ref_id_name in both snapshots → 'source_switch' not in conditions."""
+    t = _tracking_snap(ref_id="stable.com")
+    conditions = mod.check_stall_indicators(t, t)
+    assert "source_switch" not in conditions
+
+
+def test_x6_dispersion_growing_detected(mod):
+    """root_dispersion_s larger than prev → 'dispersion_growing' in conditions."""
+    curr = _tracking_snap(root_dispersion=0.002)
+    prev = _tracking_snap(root_dispersion=0.001)
+    conditions = mod.check_stall_indicators(curr, prev)
+    assert "dispersion_growing" in conditions
+
+
+def test_x7_multiple_conditions_fire_together(mod):
+    """Multiple stall conditions can be returned in the same call."""
+    curr = _tracking_snap(update_interval=300.0, ref_id="new.com", root_dispersion=0.002)
+    prev = _tracking_snap(update_interval=64.0, ref_id="old.com", root_dispersion=0.001)
+    conditions = mod.check_stall_indicators(curr, prev)
+    assert "stall" in conditions
+    assert "source_switch" in conditions
+    assert "dispersion_growing" in conditions
+
+
+# ---------------------------------------------------------------------------
+# Group Y — load_tracking_samples
+# ---------------------------------------------------------------------------
+
+def _write_tracking_csv(path, data_rows):
+    """Write a tracking CSV with header followed by data_rows."""
+    import csv as csv_mod
+    header = [
+        "timestamp", "ref_id", "stratum", "synchronized",
+        "rms_offset_s", "root_delay_s", "root_dispersion_s", "freq_ppm", "update_interval_s",
+    ]
+    with open(path, "w", newline="") as f:
+        w = csv_mod.writer(f)
+        w.writerow(header)
+        for row in data_rows:
+            w.writerow(row)
+
+
+def test_y1_loads_rows_at_or_after_since(mod, tmp_path):
+    """Only rows with timestamp >= since_timestamp are returned."""
+    path = str(tmp_path / "tracking.csv")
+    _write_tracking_csv(path, [
+        [1_000_000.0, "a.com", 1, True, 61e-9, 0.001, 0.0002, 1.234, 64.2],
+        [1_000_060.0, "a.com", 1, True, 62e-9, 0.001, 0.0002, 1.234, 64.2],
+    ])
+    rows = mod.load_tracking_samples(path, since_timestamp=1_000_060.0)
+    assert len(rows) == 1
+    assert rows[0]["timestamp"] == pytest.approx(1_000_060.0)
+
+
+def test_y2_skips_header_row(mod, tmp_path):
+    """The CSV header row is not returned as a data row."""
+    path = str(tmp_path / "tracking.csv")
+    _write_tracking_csv(path, [
+        [1_000_000.0, "a.com", 1, True, 61e-9, 0.001, 0.0002, 1.234, 64.2],
+    ])
+    rows = mod.load_tracking_samples(path, since_timestamp=0.0)
+    assert len(rows) == 1  # header not counted
+
+
+def test_y3_filters_rows_before_since(mod, tmp_path):
+    """Rows with timestamp < since_timestamp are excluded."""
+    path = str(tmp_path / "tracking.csv")
+    _write_tracking_csv(path, [
+        [999_999.0, "a.com", 1, True, 61e-9, 0.001, 0.0002, 1.234, 64.2],
+    ])
+    rows = mod.load_tracking_samples(path, since_timestamp=1_000_000.0)
+    assert rows == []
+
+
+def test_y4_missing_file_returns_empty(mod, tmp_path):
+    """Missing tracking CSV returns empty list without raising."""
+    rows = mod.load_tracking_samples(str(tmp_path / "nonexistent.csv"), since_timestamp=0.0)
+    assert rows == []
+
+
+def test_y5_correct_field_values(mod, tmp_path):
+    """All fields are parsed to the correct types and values."""
+    path = str(tmp_path / "tracking.csv")
+    _write_tracking_csv(path, [
+        [1_781_647_292.0, "17.253.2.35", 2, True, 61e-9, 0.001234, 0.000234, -2.5, 64.2],
+    ])
+    rows = mod.load_tracking_samples(path, since_timestamp=0.0)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["timestamp"] == pytest.approx(1_781_647_292.0)
+    assert r["ref_id"] == "17.253.2.35"
+    assert r["stratum"] == 2
+    assert r["synchronized"] is True
+    assert r["rms_offset_s"] == pytest.approx(61e-9, rel=1e-5)
+    assert r["root_delay_s"] == pytest.approx(0.001234, rel=1e-5)
+    assert r["root_dispersion_s"] == pytest.approx(0.000234, rel=1e-5)
+    assert r["freq_ppm"] == pytest.approx(-2.5, rel=1e-5)
+    assert r["update_interval_s"] == pytest.approx(64.2, rel=1e-5)
