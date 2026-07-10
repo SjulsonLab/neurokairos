@@ -65,5 +65,8 @@ rm -rf "/tmp/chrony-${CHRONY_VERSION}" "/tmp/${CHRONY_TARBALL}"
 apt-get purge -y \$BUILD_DEPS
 apt-get autoremove -y --purge
 apt-get clean
-rm -rf /var/lib/apt/lists/*
+# NOTE: do NOT remove /var/lib/apt/lists/* here — later stages (calibrator,
+# client discovery, server gpsd) run apt-get install without their own
+# apt-get update and rely on this package index. pi-gen clears the lists during
+# export, so leaving them costs nothing in the final image.
 EOF
