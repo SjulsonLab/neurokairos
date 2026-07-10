@@ -26,7 +26,8 @@ Both images contain `irig_sender` running as a systemd service from boot, with `
 - `chronyc tracking` should sync within ~30 s to the diverse public NTP sources.
 - `chronyd --version` should report **4.8** (built from source; not the distro 4.6).
 - `systemctl status ntp-calibrator` should report `active (running)`; it logs per-source offset statistics to `/var/log/ntp-calibrator/`. To enable ntfy push alerts, drop `/etc/ntp-calibrator-ntfy.json` (`{"server":"https://ntfy.sh","topic":"..."}`) and restart the service.
-- To use your own NTP server, edit `/etc/chrony/chrony.conf`, uncomment the `server` line at the top, then `sudo systemctl restart chrony`.
+- **LAN auto-discovery:** if a NeuroKairos **server** image is running on the same subnet, the sender finds it over mDNS within ~30 s of boot and adds it to chrony as a preferred source — no configuration. Check `chronyc sources` for the LAN server, or `cat /etc/chrony/sources.d/neurokairos.sources`. Discovered servers are added at runtime via `chronyc reload sources`; **chrony is never restarted and the clock is never stepped**, so this is safe to happen mid-recording. Discovery is link-local (a flat subnet/VLAN); it does not cross routers.
+- To use a specific NTP server instead, edit `/etc/chrony/chrony.conf`, uncomment the `server` line at the top, then `sudo systemctl restart chrony`.
 - Wire BCM GPIO 9 to your acquisition system's TTL input. Confirm pulses on a scope: 1 Hz frames, 60 pulses per frame.
 
 ### Server image — first-boot checklist
@@ -72,6 +73,14 @@ cal=/tmp/pi-gen/stage-neurokairos-common/03-install-calibrator/files
 install -m 644 raspberry_pi/scripts/ntp_calibrator.py "$cal/"
 install -m 644 raspberry_pi/systemd/ntp-calibrator.service "$cal/"
 
+# Sender variant only: stage the LAN discovery daemon + its units
+disc=/tmp/pi-gen/stage-neurokairos-client/01-install-discovery/files
+if [ -d "$disc" ]; then
+  install -m 644 raspberry_pi/scripts/nk_discover_ntp.py "$disc/"
+  install -m 644 raspberry_pi/systemd/nk-discover-ntp.service "$disc/"
+  install -m 644 raspberry_pi/systemd/nk-discover-ntp.timer "$disc/"
+fi
+
 # Don't export the vanilla Pi OS Lite image — only our variant stage exports
 rm -f /tmp/pi-gen/stage2/EXPORT_IMAGE
 
@@ -90,8 +99,8 @@ To build the other variant cleanly, run `sudo ./build-docker.sh -c clean` (or wi
 ## How the build is wired
 
 - `image/stage-neurokairos-common/` — always runs. Installs the natively-compiled `irig_sender` binary + systemd unit (`00-install-sender`), the shared packages incl. distro chrony + SSH-banner motd (`01-system-tweaks`), **chrony 4.8 built from source over the distro package** (`02-build-chrony`), and the NTP calibrator logging daemon + unit (`03-install-calibrator`).
-- `image/stage-neurokairos-client/` — exports `*-sender.img.xz`. Installs the NTP-client `chrony.conf`, sets hostname `neurokairos-sender`.
-- `image/stage-neurokairos-server/` — exports `*-server.img.xz`. Installs gpsd + pps-tools, the stratum-1 `chrony.conf`, patches `/boot/firmware/config.txt` for `pps-gpio` overlay + UART, removes the serial console from `cmdline.txt`, sets hostname `neurokairos-server`.
+- `image/stage-neurokairos-client/` — exports `*-sender.img.xz`. Installs the NTP-client `chrony.conf` (with a `sourcedir`), sets hostname `neurokairos-sender`, and installs the mDNS **discovery** daemon (`nk_discover_ntp.py` + a systemd timer) plus `avahi-daemon`/`avahi-utils` that finds LAN NeuroKairos servers and feeds them to chrony at runtime.
+- `image/stage-neurokairos-server/` — exports `*-server.img.xz`. Installs gpsd + pps-tools, the stratum-1 `chrony.conf`, patches `/boot/firmware/config.txt` for `pps-gpio` overlay + UART, removes the serial console from `cmdline.txt`, sets hostname `neurokairos-server`, and **advertises** itself over mDNS (`avahi-daemon` + `_neurokairos-ntp._udp` service) so sender Pis discover it.
 
 `raspberry_pi/sender/irig_sender.c` and `raspberry_pi/systemd/irig-sender.service` are the single source of truth. The CI workflow native-compiles the binary on a `ubuntu-24.04-arm` runner and drops it (plus the systemd unit) into the common stage's `files/` directory before pi-gen runs; nothing under `image/stage-neurokairos-common/00-install-sender/files/` is committed except the `.gitkeep` note.
 

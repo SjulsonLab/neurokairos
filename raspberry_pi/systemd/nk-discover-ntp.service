@@ -1,0 +1,15 @@
+[Unit]
+Description=NeuroKairos LAN NTP server discovery
+Documentation=https://github.com/SjulsonLab/neurokairos
+After=network-online.target avahi-daemon.service chrony.service
+Wants=network-online.target
+Requires=avahi-daemon.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /usr/local/sbin/nk_discover_ntp.py
+StandardOutput=journal
+StandardError=journal
+
+# Timer-activated (nk-discover-ntp.timer); no [Install] section by design.

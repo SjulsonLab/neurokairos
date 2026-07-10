@@ -1,3 +1,4 @@
 gpsd
 gpsd-clients
 pps-tools
+avahi-daemon

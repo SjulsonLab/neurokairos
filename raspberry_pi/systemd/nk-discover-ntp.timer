@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodic NeuroKairos LAN NTP server discovery
+Documentation=https://github.com/SjulsonLab/neurokairos
+
+[Timer]
+# First sweep shortly after boot, then re-check so a server that appears later
+# (or changes IP) is picked up. Discovery is cheap and idempotent.
+OnBootSec=30s
+OnUnitActiveSec=5min
+Unit=nk-discover-ntp.service
+
+[Install]
+WantedBy=timers.target

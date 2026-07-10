@@ -3,6 +3,11 @@
 install -m 644 files/chrony.conf "${ROOTFS_DIR}/etc/chrony/chrony.conf"
 install -m 644 files/gpsd "${ROOTFS_DIR}/etc/default/gpsd"
 
+# Advertise this server over mDNS so NeuroKairos sender Pis auto-discover it.
+install -d -m 755 "${ROOTFS_DIR}/etc/avahi/services"
+install -m 644 files/neurokairos-ntp.avahi-service \
+	"${ROOTFS_DIR}/etc/avahi/services/neurokairos-ntp.service"
+
 PPS_PIN="${PPS_PIN:-18}"
 
 # Patch boot firmware config for PPS + UART. Bookworm puts /boot at
@@ -36,6 +41,7 @@ systemctl disable hciuart.service || true
 systemctl disable serial-getty@ttyAMA0.service || true
 systemctl enable chrony
 systemctl enable gpsd
+systemctl enable avahi-daemon
 EOF
 
 echo "neurokairos-server" > "${ROOTFS_DIR}/etc/hostname"

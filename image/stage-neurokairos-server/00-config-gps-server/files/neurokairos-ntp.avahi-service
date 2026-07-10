@@ -1,0 +1,13 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- Advertises this NeuroKairos server as an NTP source on the LAN so that
+     NeuroKairos sender/client Pis discover it automatically (see
+     raspberry_pi/scripts/nk_discover_ntp.py). Installed to
+     /etc/avahi/services/ where avahi-daemon publishes it. -->
+<service-group>
+  <name replace-wildcards="yes">NeuroKairos NTP on %h</name>
+  <service>
+    <type>_neurokairos-ntp._udp</type>
+    <port>123</port>
+  </service>
+</service-group>
