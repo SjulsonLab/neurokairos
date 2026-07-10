@@ -60,8 +60,19 @@ jobs:
 
       - name: Clone pi-gen
         run: |
+          set -euo pipefail
           git clone --depth 1 --branch "$PI_GEN_REF" \
               https://github.com/RPi-Distro/pi-gen.git pi-gen
+
+          # pi-gen sizes the exported .img as du(rootfs) + ROOT_MARGIN, where
+          # ROOT_MARGIN is hardcoded to 20% + 200 MB with no config knob. On
+          # trixie that headroom is too small: the export-phase apt-get update
+          # (arm64 + armhf package lists + source cache) overflows the root
+          # partition and fails with ENOSPC. Widen the margin to 50% + 1200 MB.
+          margin='ROOT_MARGIN="$(echo "($ROOT_SIZE * 0.5 + 1200 * 1024 * 1024) / 1" | bc)"'
+          sed -i "s#^ROOT_MARGIN=.*#${margin}#" pi-gen/export-image/prerun.sh
+          echo "--- patched ROOT_MARGIN ---"
+          grep -n 'ROOT_MARGIN=' pi-gen/export-image/prerun.sh
 
       - name: Stage NeuroKairos sources into pi-gen
         run: |
@@ -84,6 +95,15 @@ jobs:
           cal=pi-gen/stage-neurokairos-common/03-install-calibrator/files
           install -m 644 raspberry_pi/scripts/ntp_calibrator.py "$cal/"
           install -m 644 raspberry_pi/systemd/ntp-calibrator.service "$cal/"
+
+          # Stage the LAN discovery daemon + units into the client stage (only
+          # present for the sender variant). Guarded so the server build skips.
+          disc=pi-gen/${{ matrix.stage_dir }}/01-install-discovery/files
+          if [ -d "$disc" ]; then
+            install -m 644 raspberry_pi/scripts/nk_discover_ntp.py "$disc/"
+            install -m 644 raspberry_pi/systemd/nk-discover-ntp.service "$disc/"
+            install -m 644 raspberry_pi/systemd/nk-discover-ntp.timer "$disc/"
+          fi
 
           # Don't export the vanilla Pi OS Lite image from stage2 — only our
           # variant stage exports.
