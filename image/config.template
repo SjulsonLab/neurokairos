@@ -5,7 +5,7 @@
 
 IMG_NAME='neurokairos'
 
-RELEASE='bookworm'
+RELEASE='trixie'
 TARGET_HOSTNAME='neurokairos'
 
 LOCALE_DEFAULT='en_US.UTF-8'

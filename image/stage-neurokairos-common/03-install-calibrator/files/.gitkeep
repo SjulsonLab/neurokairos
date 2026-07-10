@@ -1,0 +1,3 @@
+# ntp_calibrator.py and ntp-calibrator.service are copied here at build time
+# from raspberry_pi/ (the source of truth) by the CI workflow / local build.
+# Nothing but this note is committed.

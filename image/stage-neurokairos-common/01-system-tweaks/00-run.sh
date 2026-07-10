@@ -9,6 +9,7 @@ cat > "${ROOTFS_DIR}/etc/motd" <<'EOF'
 NeuroKairos — GPS-disciplined IRIG-H timecode appliance
   Sender status:   systemctl status irig-sender
   Chrony status:   chronyc tracking
+  NTP calibrator:  journalctl -u ntp-calibrator -f
   Project:         https://github.com/SjulsonLab/neurokairos
 
 EOF

@@ -45,7 +45,7 @@ pip install -e ".[test]"
 pytest tests/ -v
 ```
 
-Prebuilt Pi OS images are produced by pi-gen — see `image/README.md` and `.github/workflows/build-image.yml`. The workflow runs on a native arm64 runner (`ubuntu-24.04-arm`) so no qemu emulation is involved; `raspberry_pi/sender/irig_sender.c` compiles natively and the binary plus `raspberry_pi/systemd/irig-sender.service` are dropped into the pi-gen stage's `files/` at build time. `raspberry_pi/` remains the single source of truth.
+Prebuilt Pi OS images are produced by pi-gen — see `image/README.md` and `.github/workflows/build-image.yml`. The base is Raspberry Pi OS **trixie** (`RELEASE='trixie'`, pinned pi-gen tag `2026-06-18-raspios-trixie-arm64`). The workflow runs on a native arm64 runner (`ubuntu-24.04-arm`) so no qemu emulation is involved; `raspberry_pi/sender/irig_sender.c` compiles natively and the binary plus `raspberry_pi/systemd/irig-sender.service` are dropped into the pi-gen stage's `files/` at build time. `raspberry_pi/` remains the single source of truth. The common stage also (a) builds **chrony 4.8 from source inside the rootfs** over trixie's distro chrony 4.6 (`stage-neurokairos-common/02-build-chrony`, nettle+libcap only, no NTS/seccomp so runtime libs survive the build-dep purge), and (b) installs the **NTP calibrator logging daemon** (`03-install-calibrator`) on both variants.
 
 ## Architecture
 
@@ -58,6 +58,7 @@ Three-component system: **Encoder** (Raspberry Pi, generates IRIG-H), **Decoder*
 - `raspberry_pi/scripts/install_chrony_server.sh` — Installs chrony + gpsd on the RPi with GPS. Configures PPS-disciplined stratum 1 NTP server.
 - `raspberry_pi/scripts/install_chrony_client.sh` — Installs chrony as NTP client (no GPS). Supports custom server (`--server`).
 - `raspberry_pi/scripts/test_chrony.sh` — Diagnostic script for checking chrony/gpsd status.
+- `raspberry_pi/scripts/ntp_calibrator.py` — NTP calibration daemon. In its current form (`run_daemon`) it is a pure **logger**: samples per-server offset/stdev via `chronyc sourcestats/sources/tracking`, writes `samples.csv`/`tracking.csv`, computes precision metrics over a 24h window, checks source diversity, and optionally sends ntfy alerts. It does **not** modify `chrony.conf` — the legacy two-phase offset-pinning state machine (`_run_calibration_loop`) is retained but unused pending a finalized best-server selection policy. Installed + enabled on both images; standalone install via `install_ntp_calibrator.sh` (systemd unit `ntp-calibrator.service`, config `/etc/ntp-calibrator.json`).
 
 ### Core Python Library (`neurokairos/`)
 - `clock_table.py` — `ClockTable` dataclass: sparse time mapping (source <-> reference) with bidirectional interpolation (linear extrapolation up to 1.5 s beyond boundaries; returns NaN beyond that), optional per-pulse sync arrays (`sync_stratum`, `sync_dispersion_upperbound_ms`), save/load to NPZ, JSON-serializable metadata.

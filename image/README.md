@@ -23,7 +23,9 @@ Both images contain `irig_sender` running as a systemd service from boot, with `
 ### Sender image — first-boot checklist
 
 - `systemctl status irig-sender` should report `active (running)`.
-- `chronyc tracking` should sync within ~30 s to the public pool.
+- `chronyc tracking` should sync within ~30 s to the diverse public NTP sources.
+- `chronyd --version` should report **4.8** (built from source; not the distro 4.6).
+- `systemctl status ntp-calibrator` should report `active (running)`; it logs per-source offset statistics to `/var/log/ntp-calibrator/`. To enable ntfy push alerts, drop `/etc/ntp-calibrator-ntfy.json` (`{"server":"https://ntfy.sh","topic":"..."}`) and restart the service.
 - To use your own NTP server, edit `/etc/chrony/chrony.conf`, uncomment the `server` line at the top, then `sudo systemctl restart chrony`.
 - Wire BCM GPIO 9 to your acquisition system's TTL input. Confirm pulses on a scope: 1 Hz frames, 60 pulses per frame.
 
@@ -47,7 +49,7 @@ install -d build
 gcc -O2 -o build/irig_sender raspberry_pi/sender/irig_sender.c -lpthread -lm
 
 # Clone pi-gen at the pinned tag
-git clone --depth 1 --branch 2024-11-19-raspios-bookworm-arm64 \
+git clone --depth 1 --branch 2026-06-18-raspios-trixie-arm64 \
     https://github.com/RPi-Distro/pi-gen.git /tmp/pi-gen
 
 # Stage our pi-gen stages
@@ -64,6 +66,11 @@ esac
 dst=/tmp/pi-gen/stage-neurokairos-common/00-install-sender/files
 install -m 755 build/irig_sender "$dst/"
 install -m 644 raspberry_pi/systemd/irig-sender.service "$dst/"
+
+# Drop the NTP calibrator daemon + unit into its install step's files/
+cal=/tmp/pi-gen/stage-neurokairos-common/03-install-calibrator/files
+install -m 644 raspberry_pi/scripts/ntp_calibrator.py "$cal/"
+install -m 644 raspberry_pi/systemd/ntp-calibrator.service "$cal/"
 
 # Don't export the vanilla Pi OS Lite image — only our variant stage exports
 rm -f /tmp/pi-gen/stage2/EXPORT_IMAGE
@@ -82,7 +89,7 @@ To build the other variant cleanly, run `sudo ./build-docker.sh -c clean` (or wi
 
 ## How the build is wired
 
-- `image/stage-neurokairos-common/` — installs the cross-compiled `irig_sender` binary, the systemd unit, chrony, and the SSH-banner motd. Always runs.
+- `image/stage-neurokairos-common/` — always runs. Installs the natively-compiled `irig_sender` binary + systemd unit (`00-install-sender`), the shared packages incl. distro chrony + SSH-banner motd (`01-system-tweaks`), **chrony 4.8 built from source over the distro package** (`02-build-chrony`), and the NTP calibrator logging daemon + unit (`03-install-calibrator`).
 - `image/stage-neurokairos-client/` — exports `*-sender.img.xz`. Installs the NTP-client `chrony.conf`, sets hostname `neurokairos-sender`.
 - `image/stage-neurokairos-server/` — exports `*-server.img.xz`. Installs gpsd + pps-tools, the stratum-1 `chrony.conf`, patches `/boot/firmware/config.txt` for `pps-gpio` overlay + UART, removes the serial console from `cmdline.txt`, sets hostname `neurokairos-server`.
 

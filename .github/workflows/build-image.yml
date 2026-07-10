@@ -9,7 +9,7 @@ on:
       pi_gen_ref:
         description: 'pi-gen branch or tag to build against'
         required: false
-        default: '2024-11-19-raspios-bookworm-arm64'
+        default: '2026-06-18-raspios-trixie-arm64'
 
 permissions:
   contents: write  # needed by softprops/action-gh-release on tag pushes
@@ -34,7 +34,7 @@ jobs:
             stage_dir: stage-neurokairos-server
 
     env:
-      PI_GEN_REF: ${{ inputs.pi_gen_ref || '2024-11-19-raspios-bookworm-arm64' }}
+      PI_GEN_REF: ${{ inputs.pi_gen_ref || '2026-06-18-raspios-trixie-arm64' }}
 
     steps:
       - name: Check out neurokairos
@@ -77,6 +77,13 @@ jobs:
           dst=pi-gen/stage-neurokairos-common/00-install-sender/files
           install -m 755 build/irig_sender "$dst/"
           install -m 644 raspberry_pi/systemd/irig-sender.service "$dst/"
+
+          # Stage the NTP calibrator daemon + unit into its install step's
+          # files/. Pure-Python, so nothing to compile — just copy from the
+          # raspberry_pi/ source of truth.
+          cal=pi-gen/stage-neurokairos-common/03-install-calibrator/files
+          install -m 644 raspberry_pi/scripts/ntp_calibrator.py "$cal/"
+          install -m 644 raspberry_pi/systemd/ntp-calibrator.service "$cal/"
 
           # Don't export the vanilla Pi OS Lite image from stage2 — only our
           # variant stage exports.
