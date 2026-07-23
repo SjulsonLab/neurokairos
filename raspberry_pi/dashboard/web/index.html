@@ -128,7 +128,7 @@
 </dialog>
 
 <dialog id="notifDialog">
-  <h3>Pulse anomalies</h3>
+  <h3 id="notifTitle">Pulse anomalies</h3>
   <div id="notifList"></div>
   <div class="row"><button onclick="notifDialog.close()">Close</button></div>
 </dialog>
@@ -272,7 +272,7 @@ function qualityChip(t) {
 
 function card(pi) {
   const t = pi.timing || {};
-  const badge = `<div class="notif-badge" style="display:none" onclick="openNotifs()" title="Pulse anomalies">!</div>`;
+  const badge = `<div class="notif-badge" style="display:none" onclick="openNotifs('${pi.endpoint || ""}')" title="Pulse anomalies">!</div>`;
   if (!pi.online) {
     return `<div class="card offline" data-endpoint="${pi.endpoint || ""}">${badge}
       <div class="name">${pi.name || pi.ip}</div>
@@ -328,8 +328,8 @@ let ALERTS = [];
 
 function alertMsg(a) {
   return a.kind === "stopped"
-    ? `${a.sender_name}: IRIG-H pulses stopped (last onset ${a.onset_iso})`
-    : `${a.sender_name}: pulse interval ${a.interval_s.toFixed(2)} s (expected 1.00 s) at ${a.onset_iso}`;
+    ? `IRIG-H pulses stopped (last onset ${a.onset_iso})`
+    : `pulse interval ${a.interval_s.toFixed(2)} s (expected 1.00 s) at ${a.onset_iso}`;
 }
 
 // Show/hide the red "!" badge on each card based on its endpoint's active alerts.
@@ -345,10 +345,15 @@ function syncBadges() {
   });
 }
 
+let notifEndpoint = null;   // which sender's notifications the dialog is showing
+
 function renderNotifList() {
+  const items = ALERTS.filter(a => a.endpoint === notifEndpoint);
+  $("notifTitle").textContent = items.length
+    ? `Pulse anomalies — ${items[0].sender_name}` : "Pulse anomalies";
   const list = $("notifList");
-  if (!ALERTS.length) { list.innerHTML = `<div class="empty">No active notifications.</div>`; return; }
-  list.innerHTML = ALERTS.map(a => {
+  if (!items.length) { list.innerHTML = `<div class="empty">No active notifications.</div>`; return; }
+  list.innerHTML = items.map(a => {
     const btn = TOKEN
       ? `<button onclick="dismissAlert('${a.id}')">Dismiss</button>`
       : `<button disabled title="Log in to dismiss">Dismiss</button>`;
@@ -356,7 +361,8 @@ function renderNotifList() {
   }).join("");
 }
 
-function openNotifs() {
+function openNotifs(endpoint) {
+  notifEndpoint = endpoint;
   renderNotifList();
   if (!$("notifDialog").open) $("notifDialog").showModal();
 }
