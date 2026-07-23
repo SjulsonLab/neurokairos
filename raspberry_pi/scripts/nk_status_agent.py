@@ -29,7 +29,6 @@ from urllib.parse import urlparse
 
 AGENT_PORT = 8080
 
-LED_STATE_PATH = "/run/neurokairos/irig_led"
 NAME_PATH = "/var/lib/neurokairos/name"
 AUTH_PATH = "/var/lib/neurokairos/agent-auth"
 CALIBRATOR_STATE_PATH = "/var/lib/ntp-calibrator/state.json"
@@ -93,12 +92,6 @@ def systemctl_is_active(unit: str) -> bool:
         return False
 
 
-def read_led_state() -> str:
-    """'solid' | 'blink' | 'unknown' — the physical ACT-LED state the sender published."""
-    v = read_text(LED_STATE_PATH)
-    return v if v in ("solid", "blink") else "unknown"
-
-
 # ---------------------------------------------------------------------------
 # Pure status assembly (unit-tested)
 # ---------------------------------------------------------------------------
@@ -122,9 +115,13 @@ def quality_level(synced: bool, root_dispersion_s, warn_ms: float = DEFAULT_WARN
     return "good"
 
 
-def build_status(*, name, hostname, ip, role, led, tracking, tier,
+def build_status(*, name, hostname, ip, role, tracking, tier,
                  sources, diversity, services, calibrator, warn_ms=DEFAULT_WARN_MS):
-    """Assemble the status dict from already-parsed inputs (no I/O here)."""
+    """Assemble the status dict from already-parsed inputs (no I/O here).
+
+    The dashboard reconstructs each sender's IRIG-H output waveform from the
+    clock, so no LED/pin state is reported here.
+    """
     tracking = tracking or {}
     synced = bool(tracking.get("synchronized"))
     disp = tracking.get("root_dispersion_s")
@@ -133,7 +130,6 @@ def build_status(*, name, hostname, ip, role, led, tracking, tier,
         "hostname": hostname,
         "ip": ip,
         "role": role,
-        "led": led,  # 'solid' | 'blink' | 'unknown'
         "timing": {
             "synchronized": synced,
             "stratum": tracking.get("stratum"),
@@ -190,7 +186,6 @@ def gather_status(calib=None) -> dict:
         hostname=hostname,
         ip=get_primary_ip(),
         role=role,
-        led=read_led_state(),
         tracking=tracking,
         tier=tier,
         sources=sources,

@@ -79,14 +79,13 @@ def test_build_status_shape(mod, calib):
     sources = calib.parse_sources(SAMPLE_SOURCES)
     st = mod.build_status(
         name="lab-1", hostname="neurokairos-sender", ip="192.168.1.5",
-        role="client", led="solid", tracking=tracking,
+        role="client", tracking=tracking,
         tier=calib.detect_reference_tier(tracking, []),
         sources=sources, diversity=calib.check_source_diversity(sources),
         services={"irig-sender": True, "chrony": True}, calibrator=None,
     )
     assert st["name"] == "lab-1"
     assert st["role"] == "client"
-    assert st["led"] == "solid"
     assert st["timing"]["synchronized"] is True
     assert st["timing"]["stratum"] == 3
     assert st["timing"]["quality"] == "good"          # 0.4 ms
@@ -95,17 +94,7 @@ def test_build_status_shape(mod, calib):
     assert st["services"]["irig-sender"] is True
 
 
-# --- read_led_state / role -------------------------------------------------
-
-def test_read_led_state(mod, monkeypatch, tmp_path):
-    p = tmp_path / "irig_led"
-    monkeypatch.setattr(mod, "LED_STATE_PATH", str(p))
-    assert mod.read_led_state() == "unknown"      # missing
-    p.write_text("solid\n")
-    assert mod.read_led_state() == "solid"
-    p.write_text("garbage")
-    assert mod.read_led_state() == "unknown"
-
+# --- role ------------------------------------------------------------------
 
 def test_get_role(mod):
     assert mod.get_role("neurokairos-server") == "server"
@@ -229,13 +218,10 @@ def test_set_ntp_writes_and_reloads(mod, monkeypatch, tmp_path):
 def test_gather_status_integration(mod, calib, monkeypatch, tmp_path):
     monkeypatch.setattr(calib, "run_chronyc_tracking", lambda: SAMPLE_TRACKING)
     monkeypatch.setattr(calib, "run_chronyc_sources", lambda: SAMPLE_SOURCES)
-    monkeypatch.setattr(mod, "LED_STATE_PATH", str(tmp_path / "led"))
     monkeypatch.setattr(mod, "NAME_PATH", str(tmp_path / "name"))
     monkeypatch.setattr(mod, "CALIBRATOR_STATE_PATH", str(tmp_path / "state.json"))
     monkeypatch.setattr(mod, "systemctl_is_active", lambda u: True)
-    (tmp_path / "led").write_text("solid\n")
     st = mod.gather_status(calib=calib)
     assert st["timing"]["stratum"] == 3
     assert st["timing"]["synchronized"] is True
-    assert st["led"] == "solid"
     assert st["services"]["chrony"] is True

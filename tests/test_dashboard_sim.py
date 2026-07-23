@@ -35,7 +35,7 @@ def test_fake_status_matches_real_schema(sim):
     prof = sim._profiles()[0]                     # the server profile
     st = sim.FakeAgent(prof, "127.0.0.1").status()
     # Same top-level + nested keys the real agent's build_status emits.
-    assert set(st) >= {"name", "hostname", "ip", "role", "led", "timing",
+    assert set(st) >= {"name", "hostname", "ip", "role", "timing",
                        "sources", "services", "calibrator"}
     assert set(st["timing"]) >= {"synchronized", "stratum", "reference",
                                  "reference_tier", "root_dispersion_s", "quality"}

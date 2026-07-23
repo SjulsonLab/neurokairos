@@ -101,9 +101,6 @@ class FakeAgent:
 
     def status(self):
         p = self.p
-        # The dashboard's blue dot is driven by role + irig-sender activity, not
-        # this field; keep it as informational sync state.
-        led = "solid" if p["synced"] else "blink"
         tracking = {
             "ref_id_name": self.ntp_override or p["ref"],
             "stratum": p["stratum"],
@@ -121,8 +118,7 @@ class FakeAgent:
                       if p["precision"] is not None else None)
         return AGENT.build_status(
             name=self.name, hostname=p["hostname"], ip=self.ip, role=p["role"],
-            led=led, tracking=tracking, tier=p["tier"], sources=sources,
-            diversity=diversity,
+            tracking=tracking, tier=p["tier"], sources=sources, diversity=diversity,
             services={"irig-sender": True, "chrony": True}, calibrator=calibrator)
 
     def set_auth(self, payload):

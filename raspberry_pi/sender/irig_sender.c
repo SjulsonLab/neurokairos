@@ -571,28 +571,6 @@ void poll_chrony_status(irig_h_sender_t *sender) {
 
 // --- LED control via sysfs --- //
 
-// Publish the current ACT-LED state ("solid" = good sync, "blink" = bad/marginal)
-// to a runtime file so the status agent / web dashboard can mirror the *physical*
-// LED. Written only AFTER the physical LED has been set (physical LED has
-// priority) and only when the state changes. Called from update_led_status,
-// which runs ~once per frame in the gap between frames — never on the per-bit RT
-// path — so this small write cannot disturb pulse timing. Defined outside the
-// MOCK_GPIO split so both builds share it.
-static const char *LED_STATE_DIR = "/run/neurokairos";
-static const char *LED_STATE_PATH = "/run/neurokairos/irig_led";
-
-static void publish_led_state(const char *state) {
-    static char last_state[16] = "";
-    if (strcmp(state, last_state) == 0) return;  // only write on change
-    mkdir(LED_STATE_DIR, 0755);  // idempotent; ignore EEXIST
-    FILE *fp = fopen(LED_STATE_PATH, "w");
-    if (fp) {
-        fprintf(fp, "%s\n", state);
-        fclose(fp);
-        snprintf(last_state, sizeof(last_state), "%s", state);
-    }
-}
-
 #ifdef MOCK_GPIO
 
 void led_init(irig_h_sender_t *sender) {
@@ -610,12 +588,7 @@ void led_cleanup(irig_h_sender_t *sender) {
 }
 
 void update_led_status(irig_h_sender_t *sender) {
-    if (!sender->chrony_synced ||
-        sender->chrony_root_dispersion * 1000.0 >= sender->warn_threshold_ms) {
-        publish_led_state("blink");
-    } else {
-        publish_led_state("solid");
-    }
+    (void)sender;
 }
 
 #else  // !MOCK_GPIO
@@ -696,11 +669,9 @@ void led_cleanup(irig_h_sender_t *sender) {
 void update_led_status(irig_h_sender_t *sender) {
     double dispersion_ms = sender->chrony_root_dispersion * 1000.0;
     if (!sender->chrony_synced || dispersion_ms >= sender->warn_threshold_ms) {
-        led_set_blink(500, 500);      // physical LED first...
-        publish_led_state("blink");   // ...then mirror it for the dashboard
+        led_set_blink(500, 500);
     } else {
         led_set_solid();
-        publish_led_state("solid");
     }
 }
 
