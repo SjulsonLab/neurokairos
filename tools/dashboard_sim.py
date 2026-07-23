@@ -54,22 +54,32 @@ DASH = _load("nk_dashboard", SCRIPTS / "nk_dashboard.py")
 # ---------------------------------------------------------------------------
 
 def _profiles():
+    # 1 server + 7 senders, with varied quality / stratum / reference tier.
     return [
         dict(hostname="neurokairos-server", name="Lab GPS server", role="server",
-             tier="GNSS", ref="PPS", stratum=1, synced=True, led="solid",
-             disp=0.00005, rms=0.00003, precision=0.06, flaky=False),
+             tier="GNSS", ref="PPS", stratum=1, synced=True,
+             disp=0.00005, rms=0.00003, precision=0.06),
         dict(hostname="neurokairos-sender", name="Rig Alpha", role="client",
              tier="LAN", ref="neurokairos-server", stratum=2, synced=True,
-             led="solid", disp=0.00020, rms=0.00008, precision=0.15, flaky=False),
-        dict(hostname="neurokairos-sender", name="Rig Beta", role="client",
+             disp=0.00020, rms=0.00008, precision=0.15),
+        dict(hostname="neurokairos-sender", name="Rig Bravo", role="client",
+             tier="LAN", ref="neurokairos-server", stratum=2, synced=True,
+             disp=0.00018, rms=0.00007, precision=0.13),
+        dict(hostname="neurokairos-sender", name="Rig Charlie", role="client",
              tier="WAN", ref="time.cloudflare.com", stratum=3, synced=True,
-             led="solid", disp=0.00060, rms=0.00030, precision=0.42, flaky=False),
-        dict(hostname="neurokairos-sender", name="Rig Gamma", role="client",
-             tier="WAN", ref="time.google.com", stratum=3, synced=True,
-             led="blink", disp=0.00150, rms=0.00080, precision=1.1, flaky=True),
+             disp=0.00060, rms=0.00030, precision=0.42),
         dict(hostname="neurokairos-sender", name="Rig Delta", role="client",
-             tier="NONE", ref="", stratum=0, synced=False, led="blink",
-             disp=None, rms=None, precision=None, flaky=False),
+             tier="WAN", ref="time.google.com", stratum=3, synced=True,
+             disp=0.00072, rms=0.00035, precision=0.50),
+        dict(hostname="neurokairos-sender", name="Rig Echo", role="client",
+             tier="WAN", ref="time.apple.com", stratum=3, synced=True,
+             disp=0.00150, rms=0.00080, precision=1.10),
+        dict(hostname="neurokairos-sender", name="Rig Foxtrot", role="client",
+             tier="NONE", ref="", stratum=0, synced=False,
+             disp=None, rms=None, precision=None),
+        dict(hostname="neurokairos-sender", name="Rig Golf", role="client",
+             tier="LAN", ref="neurokairos-server", stratum=2, synced=True,
+             disp=0.00022, rms=0.00009, precision=0.16),
     ]
 
 
@@ -91,9 +101,9 @@ class FakeAgent:
 
     def status(self):
         p = self.p
-        led = p["led"]
-        if p["flaky"]:  # make Gamma's dot visibly flicker
-            led = "blink" if int(time.time()) % 2 else "solid"
+        # The dashboard's blue dot is driven by role + irig-sender activity, not
+        # this field; keep it as informational sync state.
+        led = "solid" if p["synced"] else "blink"
         tracking = {
             "ref_id_name": self.ntp_override or p["ref"],
             "stratum": p["stratum"],

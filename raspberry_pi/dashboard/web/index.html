@@ -30,7 +30,11 @@
   button.danger { color: var(--bad); border-color: #fecaca; }
   button.primary { background: var(--led); color: #fff; border-color: var(--led); }
 
-  #grid { display: flex; flex-wrap: wrap; gap: 16px; padding: 20px; align-content: flex-start; }
+  main { padding: 8px 20px 24px; }
+  .section-label { font-size: 12px; font-weight: 600; letter-spacing: .06em;
+                   text-transform: uppercase; color: var(--muted); margin: 18px 0 8px; }
+  .row { display: flex; flex-wrap: wrap; gap: 16px; align-content: flex-start; }
+  section.hidden { display: none; }
   .card {
     position: relative; width: 320px; border: 1px solid var(--line);
     border-radius: 12px; padding: 16px 16px 12px; background: #fff;
@@ -42,8 +46,9 @@
     border-radius: 50%; background: var(--unsynced);
     border: 1px solid rgba(0,0,0,.12);
   }
-  .led.solid { background: var(--led); box-shadow: 0 0 6px rgba(37,99,235,.6); }
-  .led.blink { background: var(--led); animation: pulse 1s steps(1,end) infinite; }
+  .led.sending { background: var(--led); box-shadow: 0 0 6px rgba(37,99,235,.6);
+                 animation: pulse 1s steps(1, end) infinite; }
+  .led.off { background: var(--unsynced); }
   @keyframes pulse { 50% { background: transparent; box-shadow: none; } }
 
   .name { font-size: 16px; font-weight: 650; margin: 0 22px 2px 0; cursor: text; }
@@ -85,7 +90,15 @@
   <button id="authBtn" onclick="authClick()">…</button>
 </header>
 
-<main><div id="grid"><div class="empty">Searching for NeuroKairos devices…</div></div></main>
+<main>
+  <div id="loading" class="empty">Searching for NeuroKairos devices…</div>
+  <section id="serversSec" class="hidden">
+    <div class="section-label">Servers</div><div id="servers" class="row"></div>
+  </section>
+  <section id="clientsSec" class="hidden">
+    <div class="section-label">Senders</div><div id="clients" class="row"></div>
+  </section>
+</main>
 
 <dialog id="pwDialog">
   <h3 id="pwTitle">Log in</h3>
@@ -179,7 +192,15 @@ function card(pi) {
     return `<div class="card offline"><div class="name">${pi.name || pi.ip}</div>
       <div class="sub">${pi.ip} · offline</div></div>`;
   }
-  const led = pi.led === "solid" ? "solid" : pi.led === "blink" ? "blink" : "";
+  // Blue dot = "actively sending IRIG-H", shown on senders only. It blinks
+  // (~1 Hz, matching the one-pulse-per-second IRIG-H frame) whenever the
+  // sender's irig-sender service is running; off/grey if stopped. Servers
+  // don't emit the timecode to the acquisition rig, so they get no dot.
+  const isSender = pi.role !== "server";
+  const sending = !!(pi.services && pi.services["irig-sender"]);
+  const dot = isSender
+    ? `<div class="led ${sending ? "sending" : "off"}" title="IRIG-H: ${sending ? "sending" : "stopped"}"></div>`
+    : "";
   const cal = pi.calibrator;
   const rows = [
     ["Sync", qualityChip(t)],
@@ -194,7 +215,7 @@ function card(pi) {
     rows.push(["Precision", cal.precision_typical_ms.toFixed(3) + " ms"]);
 
   return `<div class="card">
-    <div class="led ${led}" title="IRIG-H LED: ${pi.led || "unknown"}"></div>
+    ${dot}
     <div class="name" title="Click to rename" onclick='rename(${JSON.stringify(pi)})'>${pi.name || pi.hostname}</div>
     <div class="sub">${pi.hostname} · ${pi.ip} <span class="badge">${pi.role}</span></div>
     <table class="fields">${rows.map(([k, v]) => `<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`).join("")}</table>
@@ -208,14 +229,21 @@ function card(pi) {
   </div>`;
 }
 
+function renderSection(secId, listId, items) {
+  const sec = $(secId);
+  if (!items.length) { sec.classList.add("hidden"); $(listId).innerHTML = ""; return; }
+  sec.classList.remove("hidden");
+  $(listId).innerHTML = items.map(card).join("");
+}
+
 async function load() {
   const r = await api("/api/all");
   const pis = (r.body && r.body.pis) || [];
   $("count").textContent = pis.length + (pis.length === 1 ? " device" : " devices");
   $("updated").textContent = "updated " + new Date().toLocaleTimeString();
-  $("grid").innerHTML = pis.length
-    ? pis.map(card).join("")
-    : `<div class="empty">No NeuroKairos devices found on the network yet.</div>`;
+  $("loading").style.display = pis.length ? "none" : "";
+  renderSection("serversSec", "servers", pis.filter(p => p.role === "server"));
+  renderSection("clientsSec", "clients", pis.filter(p => p.role !== "server"));
 }
 
 async function init() {

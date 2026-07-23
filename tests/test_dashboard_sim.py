@@ -44,12 +44,18 @@ def test_fake_status_matches_real_schema(sim):
 def test_quality_reflects_profile(sim):
     profs = {p["name"]: p for p in sim._profiles()}
     good = sim.FakeAgent(profs["Lab GPS server"], "127.0.0.1").status()
-    bad = sim.FakeAgent(profs["Rig Gamma"], "127.0.0.1").status()
-    unsynced = sim.FakeAgent(profs["Rig Delta"], "127.0.0.1").status()
+    bad = sim.FakeAgent(profs["Rig Echo"], "127.0.0.1").status()
+    unsynced = sim.FakeAgent(profs["Rig Foxtrot"], "127.0.0.1").status()
     assert good["timing"]["quality"] == "good"
     assert bad["timing"]["quality"] == "bad"
     assert unsynced["timing"]["quality"] == "unsynced"
     assert good["role"] == "server"
+
+
+def test_profile_counts(sim):
+    profs = sim._profiles()
+    assert sum(1 for p in profs if p["role"] == "server") == 1
+    assert sum(1 for p in profs if p["role"] == "client") == 7
 
 
 def test_control_requires_matching_auth(sim):
