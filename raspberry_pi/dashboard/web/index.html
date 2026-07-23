@@ -83,10 +83,16 @@
                  border-radius: 7px; font: inherit; margin-bottom: 12px; }
   dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
 
-  .alert-strip { padding: 0 20px; }
+  /* Per-sender pulse-anomaly badge: small red square with "!" inside the card,
+     just left of the IRIG dot. Click opens the notifications dialog. */
+  .notif-badge { position: absolute; top: 10px; right: 34px; width: 18px; height: 18px;
+                 background: var(--bad); color: #fff; border-radius: 4px; cursor: pointer;
+                 font-size: 12px; font-weight: 800; line-height: 18px; text-align: center; }
+  .card.offline .notif-badge { right: 14px; }
+  #notifList { min-width: 380px; max-height: 60vh; overflow: auto; }
   .alert { display: flex; align-items: center; justify-content: space-between; gap: 12px;
            background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
-           border-radius: 8px; padding: 8px 12px; margin: 10px 0 0; font-size: 13px; }
+           border-radius: 8px; padding: 8px 12px; margin: 8px 0; font-size: 13px; }
   .alert .msg { font-weight: 500; }
   .alert button { border-color: #fecaca; color: #991b1b; }
   .alert button:disabled { opacity: .5; cursor: not-allowed; }
@@ -100,8 +106,6 @@
   <span class="updated" id="updated"></span>
   <button id="authBtn" onclick="authClick()">…</button>
 </header>
-
-<div id="alerts" class="alert-strip"></div>
 
 <main>
   <div id="loading" class="empty">Searching for NeuroKairos devices…</div>
@@ -121,6 +125,12 @@
     <button onclick="pwDialog.close()">Cancel</button>
     <button class="primary" id="pwOk" onclick="pwSubmit()">OK</button>
   </div>
+</dialog>
+
+<dialog id="notifDialog">
+  <h3>Pulse anomalies</h3>
+  <div id="notifList"></div>
+  <div class="row"><button onclick="notifDialog.close()">Close</button></div>
 </dialog>
 
 <script>
@@ -262,8 +272,10 @@ function qualityChip(t) {
 
 function card(pi) {
   const t = pi.timing || {};
+  const badge = `<div class="notif-badge" style="display:none" onclick="openNotifs()" title="Pulse anomalies">!</div>`;
   if (!pi.online) {
-    return `<div class="card offline"><div class="name">${pi.name || pi.ip}</div>
+    return `<div class="card offline" data-endpoint="${pi.endpoint || ""}">${badge}
+      <div class="name">${pi.name || pi.ip}</div>
       <div class="sub">${pi.ip} · offline</div></div>`;
   }
   // Blue dot mirrors the sender's IRIG-H output GPIO pin: present while HIGH,
@@ -289,8 +301,9 @@ function card(pi) {
   if (cal && cal.precision_typical_ms != null)
     rows.push(["Precision", cal.precision_typical_ms.toFixed(3) + " ms"]);
 
-  return `<div class="card">
+  return `<div class="card" data-endpoint="${pi.endpoint || ""}">
     ${dot}
+    ${badge}
     <div class="name" title="Click to rename" onclick='rename(${JSON.stringify(pi)})'>${pi.name || pi.hostname}</div>
     <div class="sub">${pi.hostname} · ${pi.ip} <span class="badge">${pi.role}</span></div>
     <table class="fields">${rows.map(([k, v]) => `<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`).join("")}</table>
@@ -311,22 +324,48 @@ function renderSection(secId, listId, items) {
   $(listId).innerHTML = items.map(card).join("");
 }
 
-function renderAlerts(alerts) {
-  const el = $("alerts");
-  if (!alerts || !alerts.length) { el.innerHTML = ""; return; }
-  el.innerHTML = alerts.map(a => {
-    const msg = a.kind === "stopped"
-      ? `${a.sender_name}: IRIG-H pulses stopped (last onset ${a.onset_iso})`
-      : `${a.sender_name}: pulse interval ${a.interval_s.toFixed(2)} s (expected 1.00 s) at ${a.onset_iso}`;
+let ALERTS = [];
+
+function alertMsg(a) {
+  return a.kind === "stopped"
+    ? `${a.sender_name}: IRIG-H pulses stopped (last onset ${a.onset_iso})`
+    : `${a.sender_name}: pulse interval ${a.interval_s.toFixed(2)} s (expected 1.00 s) at ${a.onset_iso}`;
+}
+
+// Show/hide the red "!" badge on each card based on its endpoint's active alerts.
+function syncBadges() {
+  const counts = {};
+  ALERTS.forEach(a => { counts[a.endpoint] = (counts[a.endpoint] || 0) + 1; });
+  document.querySelectorAll(".card[data-endpoint]").forEach(el => {
+    const badge = el.querySelector(".notif-badge");
+    if (!badge) return;
+    const n = counts[el.dataset.endpoint] || 0;
+    badge.style.display = n ? "block" : "none";
+    badge.title = `${n} pulse ${n === 1 ? "anomaly" : "anomalies"} — click to view`;
+  });
+}
+
+function renderNotifList() {
+  const list = $("notifList");
+  if (!ALERTS.length) { list.innerHTML = `<div class="empty">No active notifications.</div>`; return; }
+  list.innerHTML = ALERTS.map(a => {
     const btn = TOKEN
       ? `<button onclick="dismissAlert('${a.id}')">Dismiss</button>`
       : `<button disabled title="Log in to dismiss">Dismiss</button>`;
-    return `<div class="alert"><span class="msg">⚠ ${msg}</span>${btn}</div>`;
+    return `<div class="alert"><span class="msg">⚠ ${alertMsg(a)}</span>${btn}</div>`;
   }).join("");
 }
+
+function openNotifs() {
+  renderNotifList();
+  if (!$("notifDialog").open) $("notifDialog").showModal();
+}
+
 async function loadAlerts() {
   const r = await api("/api/alerts");
-  renderAlerts(r.body && r.body.alerts);
+  ALERTS = (r.body && r.body.alerts) || [];
+  syncBadges();
+  if ($("notifDialog").open) renderNotifList();   // keep an open panel fresh
 }
 async function dismissAlert(id) {
   if (!TOKEN) { authClick(); return; }
@@ -343,6 +382,7 @@ async function load() {
   $("loading").style.display = pis.length ? "none" : "";
   renderSection("serversSec", "servers", pis.filter(p => p.role === "server"));
   renderSection("clientsSec", "clients", pis.filter(p => p.role !== "server"));
+  syncBadges();   // freshly-rendered cards start with badges hidden; restore them
 }
 
 async function init() {
