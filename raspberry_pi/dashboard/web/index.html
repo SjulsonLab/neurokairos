@@ -149,10 +149,10 @@ async function pwSubmit() {
   refreshAuthBtn(); $("pwDialog").close();
 }
 
-async function control(target, action, params) {
+async function control(ip, port, action, params) {
   if (!TOKEN) { authClick(); return; }
   const r = await api("/api/control", { method: "POST",
-    body: JSON.stringify({ token: TOKEN, target, action, params: params || {} }) });
+    body: JSON.stringify({ token: TOKEN, target: ip, port, action, params: params || {} }) });
   if (r.status === 401) { TOKEN = null; sessionStorage.removeItem("nk_token"); refreshAuthBtn(); authClick(); return; }
   if (!r.ok) { alert(r.body.error || "Action failed"); return; }
   load();
@@ -160,11 +160,11 @@ async function control(target, action, params) {
 
 function rename(pi) {
   const name = prompt("Rename this device:", pi.name || pi.hostname);
-  if (name) control(pi.ip, "rename", { name });
+  if (name) control(pi.ip, pi.port, "rename", { name });
 }
 function setNtp(pi) {
   const server = prompt("NTP server for this device (blank to clear / use discovery):", "");
-  if (server !== null) control(pi.ip, "set-ntp", { server });
+  if (server !== null) control(pi.ip, pi.port, "set-ntp", { server });
 }
 
 function qualityChip(t) {
@@ -199,11 +199,11 @@ function card(pi) {
     <div class="sub">${pi.hostname} · ${pi.ip} <span class="badge">${pi.role}</span></div>
     <table class="fields">${rows.map(([k, v]) => `<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`).join("")}</table>
     <div class="actions">
-      <button onclick='control("${pi.ip}","restart",{service:"chrony"})'>Restart chrony</button>
-      <button onclick='control("${pi.ip}","restart",{service:"irig-sender"})'>Restart sender</button>
+      <button onclick='control("${pi.ip}",${pi.port},"restart",{service:"chrony"})'>Restart chrony</button>
+      <button onclick='control("${pi.ip}",${pi.port},"restart",{service:"irig-sender"})'>Restart sender</button>
       <button onclick='setNtp(${JSON.stringify(pi)})'>Set NTP</button>
-      <button onclick='if(confirm("Reboot ${pi.hostname}?"))control("${pi.ip}","reboot")'>Reboot</button>
-      <button class="danger" onclick='if(confirm("Shut down ${pi.hostname}?"))control("${pi.ip}","shutdown")'>Shutdown</button>
+      <button onclick='if(confirm("Reboot ${pi.hostname}?"))control("${pi.ip}",${pi.port},"reboot")'>Reboot</button>
+      <button class="danger" onclick='if(confirm("Shut down ${pi.hostname}?"))control("${pi.ip}",${pi.port},"shutdown")'>Shutdown</button>
     </div>
   </div>`;
 }

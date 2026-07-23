@@ -86,14 +86,14 @@ def discover_agents():
 
 def fetch_status(ip: str, port: int, timeout: float = FETCH_TIMEOUT_S):
     url = f"http://{ip}:{port}/api/status"
+    endpoint = f"{ip}:{port}"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        data["online"] = True
-        data.setdefault("ip", ip)
+        data.update({"online": True, "ip": ip, "port": port, "endpoint": endpoint})
         return data
     except (urllib.error.URLError, OSError, json.JSONDecodeError, ValueError):
-        return {"ip": ip, "online": False}
+        return {"ip": ip, "port": port, "endpoint": endpoint, "online": False}
 
 
 def collect(agents, fetcher=fetch_status):
@@ -102,10 +102,15 @@ def collect(agents, fetcher=fetch_status):
 
 
 def build_all(statuses):
-    """Dedupe (by hostname or ip), sort (servers first, then name), and wrap."""
+    """Dedupe by reachable endpoint (ip:port), sort (servers first, then name), wrap.
+
+    Identity is the ip:port endpoint, NOT hostname — every sender image ships the
+    same hostname (neurokairos-sender), so hostname would wrongly collapse
+    distinct client Pis into one. ip:port is unique per reachable agent.
+    """
     by_key = {}
     for s in statuses:
-        key = s.get("hostname") or s.get("ip")
+        key = s.get("endpoint") or s.get("ip") or s.get("hostname")
         # Prefer an online record over an offline duplicate.
         if key not in by_key or (s.get("online") and not by_key[key].get("online")):
             by_key[key] = s
