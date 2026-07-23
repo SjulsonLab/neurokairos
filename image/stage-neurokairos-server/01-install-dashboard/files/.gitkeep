@@ -1,0 +1,3 @@
+# nk_dashboard.py, nk_publish_alias.sh, nk-dashboard.service,
+# nk-dashboard-alias.service and index.html are copied here at build time from
+# raspberry_pi/ (the source of truth) by the CI workflow / local build.

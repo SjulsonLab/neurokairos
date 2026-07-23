@@ -37,6 +37,25 @@ Both images contain `irig_sender` running as a systemd service from boot, with `
 - `chronyc sources` should show both `#? GPS` and `#* PPS`; `chronyc tracking` should report stratum 1 within a few minutes of GPS lock.
 - `gpspipe -w` (one of `gpsd-clients`) shows live NMEA if the receiver is talking.
 
+## Status dashboard
+
+Every Pi runs a lightweight status agent; **server** Pis additionally host a web
+dashboard. From any device on the same LAN, open **`http://neurokairos.local`**
+(published by the server; each server is also reachable at its own
+`<hostname>.local`). You get a white page with one rectangle per Pi — servers and
+clients — showing timing quality, stratum, reference + tier, offsets, root
+dispersion, calibrator precision, and a small blue dot mirroring that Pi's
+physical IRIG-H ACT LED (solid = good sync, blinking = marginal/unsynced).
+
+- **First visit** prompts you to set a dashboard password. Viewing is open to
+  anyone on the LAN; **write-actions require the password.**
+- Per-Pi actions (no SSH needed): **rename**, **restart chrony / irig-sender**,
+  **set NTP source**, **reboot**, **shutdown**.
+- The agent is low-priority and cannot interrupt a client's real-time IRIG-H
+  sending; the dashboard only runs on servers for the same reason.
+- Limitations: needs ≥1 server on the LAN to host the UI; mDNS is link-local (a
+  flat subnet, not across routers); trust is LAN-scoped.
+
 ## Building locally
 
 Requires a **native arm64 Linux host** with Docker — the workflow is built around running on an arm64 machine (Pi 4B/5, Ampere/Graviton VM, Apple Silicon via an arm64 Linux VM, etc.). It does not work on x86_64 without rearchitecting the whole flow: we tried that path and found pi-gen's qemu-user emulation crashes mid-build for Python and other packages.
@@ -81,6 +100,21 @@ if [ -d "$disc" ]; then
   install -m 644 raspberry_pi/systemd/nk-discover-ntp.timer "$disc/"
 fi
 
+# Both images: stage the status agent into the common stage
+agent=/tmp/pi-gen/stage-neurokairos-common/04-install-status-agent/files
+install -m 644 raspberry_pi/scripts/nk_status_agent.py "$agent/"
+install -m 644 raspberry_pi/systemd/nk-status-agent.service "$agent/"
+
+# Server variant only: stage the dashboard (web UI + alias publisher)
+dash=/tmp/pi-gen/stage-neurokairos-server/01-install-dashboard/files
+if [ -d "$dash" ]; then
+  install -m 644 raspberry_pi/scripts/nk_dashboard.py "$dash/"
+  install -m 644 raspberry_pi/scripts/nk_publish_alias.sh "$dash/"
+  install -m 644 raspberry_pi/systemd/nk-dashboard.service "$dash/"
+  install -m 644 raspberry_pi/systemd/nk-dashboard-alias.service "$dash/"
+  install -m 644 raspberry_pi/dashboard/web/index.html "$dash/"
+fi
+
 # Don't export the vanilla Pi OS Lite image — only our variant stage exports
 rm -f /tmp/pi-gen/stage2/EXPORT_IMAGE
 
@@ -98,9 +132,9 @@ To build the other variant cleanly, run `sudo ./build-docker.sh -c clean` (or wi
 
 ## How the build is wired
 
-- `image/stage-neurokairos-common/` — always runs. Installs the natively-compiled `irig_sender` binary + systemd unit (`00-install-sender`), the shared packages incl. distro chrony + SSH-banner motd (`01-system-tweaks`), **chrony 4.8 built from source over the distro package** (`02-build-chrony`), and the NTP calibrator logging daemon + unit (`03-install-calibrator`).
+- `image/stage-neurokairos-common/` — always runs. Installs the natively-compiled `irig_sender` binary + systemd unit (`00-install-sender`), the shared packages incl. distro chrony + SSH-banner motd (`01-system-tweaks`), **chrony 4.8 built from source over the distro package** (`02-build-chrony`), the NTP calibrator logging daemon + unit (`03-install-calibrator`), and the **status agent + `avahi-daemon`/`avahi-utils`** that reports timing/LED status and advertises `_neurokairos-status._tcp` for the dashboard (`04-install-status-agent`).
 - `image/stage-neurokairos-client/` — exports `*-sender.img.xz`. Installs the NTP-client `chrony.conf` (with a `sourcedir`), sets hostname `neurokairos-sender`, and installs the mDNS **discovery** daemon (`nk_discover_ntp.py` + a systemd timer) plus `avahi-daemon`/`avahi-utils` that finds LAN NeuroKairos servers and feeds them to chrony at runtime.
-- `image/stage-neurokairos-server/` — exports `*-server.img.xz`. Installs gpsd + pps-tools, the stratum-1 `chrony.conf`, patches `/boot/firmware/config.txt` for `pps-gpio` overlay + UART, removes the serial console from `cmdline.txt`, sets hostname `neurokairos-server`, and **advertises** itself over mDNS (`avahi-daemon` + `_neurokairos-ntp._udp` service) so sender Pis discover it.
+- `image/stage-neurokairos-server/` — exports `*-server.img.xz`. Installs gpsd + pps-tools, the stratum-1 `chrony.conf`, patches `/boot/firmware/config.txt` for `pps-gpio` overlay + UART, removes the serial console from `cmdline.txt`, sets hostname `neurokairos-server`, **advertises** itself over mDNS (`_neurokairos-ntp._udp`) so sender Pis discover it, and hosts the **status dashboard** (`01-install-dashboard`: web UI on port 80 + the `neurokairos.local` mDNS alias).
 
 `raspberry_pi/sender/irig_sender.c` and `raspberry_pi/systemd/irig-sender.service` are the single source of truth. The CI workflow native-compiles the binary on a `ubuntu-24.04-arm` runner and drops it (plus the systemd unit) into the common stage's `files/` directory before pi-gen runs; nothing under `image/stage-neurokairos-common/00-install-sender/files/` is committed except the `.gitkeep` note.
 

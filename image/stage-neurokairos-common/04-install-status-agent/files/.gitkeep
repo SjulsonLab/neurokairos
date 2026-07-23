@@ -1,0 +1,3 @@
+# nk_status_agent.py and nk-status-agent.service are copied here at build time
+# from raspberry_pi/ (the source of truth) by the CI workflow / local build.
+# The neurokairos-status.avahi-service XML in this dir IS committed (static config).

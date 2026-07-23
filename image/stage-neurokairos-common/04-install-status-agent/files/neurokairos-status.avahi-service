@@ -1,0 +1,12 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- Advertises this Pi's NeuroKairos status agent so the server-hosted
+     dashboard can discover it over mDNS. Installed on BOTH images to
+     /etc/avahi/services/ where avahi-daemon publishes it. -->
+<service-group>
+  <name replace-wildcards="yes">NeuroKairos status on %h</name>
+  <service>
+    <type>_neurokairos-status._tcp</type>
+    <port>8080</port>
+  </service>
+</service-group>

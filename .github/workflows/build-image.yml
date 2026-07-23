@@ -105,6 +105,21 @@ jobs:
             install -m 644 raspberry_pi/systemd/nk-discover-ntp.timer "$disc/"
           fi
 
+          # Stage the status agent (both images) into the common stage.
+          agent=pi-gen/stage-neurokairos-common/04-install-status-agent/files
+          install -m 644 raspberry_pi/scripts/nk_status_agent.py "$agent/"
+          install -m 644 raspberry_pi/systemd/nk-status-agent.service "$agent/"
+
+          # Stage the dashboard (server variant only) into its install step.
+          dash=pi-gen/${{ matrix.stage_dir }}/01-install-dashboard/files
+          if [ -d "$dash" ]; then
+            install -m 644 raspberry_pi/scripts/nk_dashboard.py "$dash/"
+            install -m 644 raspberry_pi/scripts/nk_publish_alias.sh "$dash/"
+            install -m 644 raspberry_pi/systemd/nk-dashboard.service "$dash/"
+            install -m 644 raspberry_pi/systemd/nk-dashboard-alias.service "$dash/"
+            install -m 644 raspberry_pi/dashboard/web/index.html "$dash/"
+          fi
+
           # Don't export the vanilla Pi OS Lite image from stage2 — only our
           # variant stage exports.
           rm -f pi-gen/stage2/EXPORT_IMAGE
