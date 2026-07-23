@@ -20,6 +20,15 @@
 #include <sched.h>
 #include <stdint.h>
 #include <getopt.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/time.h>
+
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0  // macOS (MOCK builds) uses SO_NOSIGPIPE; 0 is harmless here
+#endif
 
 // BCM283x/BCM2711 GPIO register base addresses (Pi 1-4)
 #define BCM2708_PERI_BASE_RPI1  0x20000000
@@ -83,6 +92,7 @@ typedef struct {
 } double_array_t;
 
 #define SENDING_BIT_LENGTH 1.0
+#define ONSET_RING 64  // pulse-onset SPSC ring capacity (onsets are 1/s)
 // Offset to account for pin toggle latency (tuned via oscilloscope).
 // Pi 5 has a faster CPU (Cortex-A76) so less overhead before the register write.
 #define OFFSET_NS_RPI4 20000
@@ -146,15 +156,20 @@ typedef struct {
     double warn_threshold_ms;      // LED warning threshold (default 1.0)
     char led_original_trigger[64]; // saved LED trigger for cleanup
 
-    // Latest pulse-onset (rising-edge) time, CLOCK_REALTIME epoch ns. Written by
-    // the RT thread on each onset (one aligned store, no syscall); read by the
-    // main thread to publish onsets for cadence monitoring. 0 = none yet.
-    volatile uint64_t last_onset_realtime_ns;
+    // Pulse-onset (rising-edge) times, CLOCK_REALTIME epoch ns, published to the
+    // dashboard for cadence monitoring. Single-producer (RT thread) /
+    // single-consumer (onset_thread) ring: the RT thread writes one slot and
+    // bumps onset_head (one aligned store, no syscall/lock); the worker drains
+    // it and POSTs each onset over the network — off the RT path.
+    uint64_t onset_ring[ONSET_RING];
+    volatile uint64_t onset_head;
+    pthread_t onset_thread;
 } irig_h_sender_t;
 
 void init_timing_constants(void);
 uint64_t timespec_to_ns(const struct timespec *ts);
 void ultra_wait_until_ns(uint64_t target_ns);
+void* onset_push_thread(void *arg);
 
 volatile sig_atomic_t running = 1;
 static int debug_mode = 0;
@@ -987,12 +1002,14 @@ void* continuous_irig_sending(void *arg) {
             }
 
             // Record the onset (rising-edge) wall-clock time for cadence
-            // monitoring. One vDSO clock read + one aligned store — negligible,
-            // and it does not move the absolute-scheduled edges. The main thread
-            // publishes this off the RT path.
+            // monitoring. One vDSO clock read + one ring store + one head bump —
+            // no syscall/lock, and it does not move the absolute-scheduled edges.
+            // The onset worker thread drains the ring and POSTs off the RT path.
             struct timespec onset_rt;
             clock_gettime(CLOCK_REALTIME, &onset_rt);
-            sender->last_onset_realtime_ns = timespec_to_ns(&onset_rt);
+            uint64_t head = sender->onset_head;
+            sender->onset_ring[head % ONSET_RING] = timespec_to_ns(&onset_rt);
+            sender->onset_head = head + 1;
 
             uint64_t pulse_ns = (uint64_t)(sender->pulse_lengths[i] * NS_PER_SEC);
             ultra_fast_pulse(sender, pulse_ns);
@@ -1058,7 +1075,7 @@ irig_h_sender_t* create_irig_h_sender(int gpio_pin, int inverted_gpio_pin) {
     sender->chrony_synced = false;
     sender->warn_threshold_ms = 1.0;
     sender->led_original_trigger[0] = '\0';
-    sender->last_onset_realtime_ns = 0;
+    sender->onset_head = 0;
 
     time_t now = time(NULL);
     struct tm *tm_info = gmtime(&now); // UTC timestamp in filename for consistency
@@ -1092,6 +1109,7 @@ irig_h_sender_t* create_irig_h_sender(int gpio_pin, int inverted_gpio_pin) {
 void start_irig_sender(irig_h_sender_t *sender) {
     sender->running = true;
     pthread_create(&sender->sender_thread, NULL, continuous_irig_sending, sender);
+    pthread_create(&sender->onset_thread, NULL, onset_push_thread, sender);
 }
 
 void write_timestamps_to_file(irig_h_sender_t *sender) {
@@ -1132,34 +1150,81 @@ void write_latency_log(irig_h_sender_t *sender) {
            latency_log_path, sender->pulse_count);
 }
 
-// Publish recent pulse onsets to /run/neurokairos/irig_onsets (last ONSET_RING,
-// one epoch-seconds value per line) for the status agent to relay to the
-// dashboard. Called from the main (non-RT) thread, so file IO is safe here.
-#define ONSET_FILE_PATH "/run/neurokairos/irig_onsets"
-#define ONSET_RING 8
-static void publish_onset(uint64_t onset_ns) {
-    static uint64_t ring[ONSET_RING];
-    static int count = 0;
-    if (count < ONSET_RING) {
-        ring[count++] = onset_ns;
-    } else {
-        memmove(ring, ring + 1, (ONSET_RING - 1) * sizeof(uint64_t));
-        ring[ONSET_RING - 1] = onset_ns;
+// Dashboard target for pushing pulse onsets (override host via NK_DASHBOARD_HOST).
+#define DASHBOARD_DEFAULT_HOST "neurokairos.local"
+#define DASHBOARD_DEFAULT_PORT "80"
+
+// POST one onset to the dashboard's /api/onset. Fire-and-forget and fully
+// bounded (non-blocking connect + 1s poll, send/recv timeouts) so an
+// unreachable server can't stall the worker; all errors are ignored. Runs on
+// the onset worker thread, never the RT thread.
+static void http_post_onset(const char *host, const char *port, uint64_t onset_ns) {
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, port, &hints, &res) != 0 || !res) return;
+
+    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (fd < 0) { freeaddrinfo(res); return; }
+
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    int rc = connect(fd, res->ai_addr, res->ai_addrlen);
+    if (rc < 0 && errno == EINPROGRESS) {
+        struct pollfd pfd = { fd, POLLOUT, 0 };
+        int err = 0; socklen_t elen = sizeof(err);
+        if (poll(&pfd, 1, 1000) <= 0 ||
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen) < 0 || err) {
+            close(fd); freeaddrinfo(res); return;
+        }
+    } else if (rc < 0) {
+        close(fd); freeaddrinfo(res); return;
     }
-    mkdir("/run/neurokairos", 0755);  // idempotent
-    const char *tmp = ONSET_FILE_PATH ".tmp";
-    FILE *fp = fopen(tmp, "w");
-    if (!fp) return;
-    for (int i = 0; i < count; i++) {
-        fprintf(fp, "%.9f\n", (double)ring[i] / 1e9);
+    fcntl(fd, F_SETFL, flags);  // restore blocking for send/recv
+
+    struct timeval tv = { 1, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    char body[64];
+    int blen = snprintf(body, sizeof(body), "{\"onset\": %.9f}", (double)onset_ns / 1e9);
+    char req[256];
+    int rlen = snprintf(req, sizeof(req),
+        "POST /api/onset HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\n"
+        "Content-Length: %d\r\nConnection: close\r\n\r\n%s", host, blen, body);
+    if (send(fd, req, rlen, MSG_NOSIGNAL) > 0) {
+        char discard[128];
+        recv(fd, discard, sizeof(discard), 0);  // best-effort drain
     }
-    fclose(fp);
-    rename(tmp, ONSET_FILE_PATH);
+    close(fd);
+    freeaddrinfo(res);
+}
+
+// Onset worker thread: drain the SPSC ring and POST each onset. Non-RT.
+void* onset_push_thread(void *arg) {
+    irig_h_sender_t *sender = (irig_h_sender_t*)arg;
+    const char *host = getenv("NK_DASHBOARD_HOST");
+    if (!host || !*host) host = DASHBOARD_DEFAULT_HOST;
+    uint64_t tail = 0;
+    while (sender->running && running) {
+        uint64_t head = sender->onset_head;
+        if (head - tail > ONSET_RING) tail = head - ONSET_RING;  // dropped oldest
+        while (tail < head) {
+            uint64_t ts = sender->onset_ring[tail % ONSET_RING];
+            tail++;
+            http_post_onset(host, DASHBOARD_DEFAULT_PORT, ts);
+        }
+        struct timespec poll_sleep = {0, 20 * 1000 * 1000};  // 20 ms
+        nanosleep(&poll_sleep, NULL);
+    }
+    return NULL;
 }
 
 void finish_irig_sender(irig_h_sender_t *sender) {
     sender->running = false;
     pthread_join(sender->sender_thread, NULL);
+    pthread_join(sender->onset_thread, NULL);
 
     // Write latency log before cleanup
     write_latency_log(sender);
@@ -1351,17 +1416,8 @@ int main(int argc, char *argv[]) {
     start_irig_sender(sender);
     printf("IRIG-H transmission started\n");
 
-    // Publish pulse onsets off the RT thread: poll the latest onset the sender
-    // thread recorded and, when it changes, append it to the onset file.
-    uint64_t last_published = 0;
     while (running) {
-        uint64_t onset = sender->last_onset_realtime_ns;
-        if (onset != 0 && onset != last_published) {
-            last_published = onset;
-            publish_onset(onset);
-        }
-        struct timespec poll = {0, 100 * 1000 * 1000};  // 100 ms
-        nanosleep(&poll, NULL);
+        sleep(1);
     }
 
     printf("Stopping IRIG-H sender...\n");

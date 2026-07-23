@@ -215,42 +215,6 @@ def test_set_ntp_writes_and_reloads(mod, monkeypatch, tmp_path):
 
 # --- gather_status integration (real parser, mocked chronyc) ---------------
 
-def test_parse_onsets(mod):
-    text = "1753000000.100000000\n1753000001.100000000\n\ngarbage\n1753000002.100000000\n"
-    assert mod.parse_onsets(text) == [1753000000.1, 1753000001.1, 1753000002.1]
-
-
-def test_select_new_onsets(mod):
-    onsets = [10.0, 11.0, 12.0, 13.0]
-    assert mod.select_new_onsets(onsets, 11.0) == [12.0, 13.0]
-    assert mod.select_new_onsets(onsets, 13.0) == []
-
-
-def test_parse_dashboard_browse(mod):
-    text = (
-        "+;eth0;IPv4;NK;_neurokairos-dashboard._tcp;local\n"
-        "=;eth0;IPv4;NK;_neurokairos-dashboard._tcp;local;s.local;192.168.1.2;80;\n"
-        "=;eth0;IPv6;NK;_neurokairos-dashboard._tcp;local;s.local;fe80::1;80;\n"
-    )
-    assert mod._parse_dashboard_browse(text) == [("192.168.1.2", 80)]
-
-
-def test_push_onset_posts_to_each(mod, monkeypatch):
-    calls = []
-    def fake_urlopen(req, timeout=None):
-        calls.append((req.full_url, json.loads(req.data.decode())))
-        class R:  # context-manager stub
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-        return R()
-    monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
-    mod.push_onset([("10.0.0.1", 80), ("10.0.0.2", 80)],
-                   {"hostname": "h", "ip": "10.0.0.9", "onset": 123.5})
-    assert [c[0] for c in calls] == [
-        "http://10.0.0.1:80/api/onset", "http://10.0.0.2:80/api/onset"]
-    assert calls[0][1]["onset"] == 123.5
-
-
 def test_gather_status_integration(mod, calib, monkeypatch, tmp_path):
     monkeypatch.setattr(calib, "run_chronyc_tracking", lambda: SAMPLE_TRACKING)
     monkeypatch.setattr(calib, "run_chronyc_sources", lambda: SAMPLE_SOURCES)

@@ -14,12 +14,8 @@ install -m 644 files/nk-dashboard-alias.service "${ROOTFS_DIR}/etc/systemd/syste
 install -d -m 755 "${ROOTFS_DIR}/usr/local/share/neurokairos-dashboard"
 install -m 644 files/index.html "${ROOTFS_DIR}/usr/local/share/neurokairos-dashboard/index.html"
 
-# Advertise the dashboard over mDNS so sender agents can push pulse onsets to it.
-install -d -m 755 "${ROOTFS_DIR}/etc/avahi/services"
-install -m 644 files/neurokairos-dashboard.avahi-service \
-	"${ROOTFS_DIR}/etc/avahi/services/neurokairos-dashboard.service"
-
-# The dashboard's pulse-anomaly log + auth live here.
+# The dashboard's pulse-anomaly log + auth live here. Senders reach the
+# dashboard via the neurokairos.local mDNS alias (nk-dashboard-alias.service).
 install -d -m 755 "${ROOTFS_DIR}/var/lib/neurokairos"
 
 on_chroot << EOF

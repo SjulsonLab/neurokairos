@@ -241,9 +241,16 @@ def test_dismiss_requires_token(mod, monkeypatch, tmp_path, monitor):
 
 
 def test_handle_onset_validation(monitor):
-    assert monitor.handle_onset({"ip": "10.0.0.5"}, 1000.0)[0] == 400
-    assert monitor.handle_onset({"onset": 1.0}, 1000.0)[0] == 400
-    assert monitor.handle_onset({"ip": "10.0.0.5", "port": 8080, "onset": 1000.0}, 1000.0)[0] == 200
+    assert monitor.handle_onset({}, 1000.0, "10.0.0.5")[0] == 400          # no onset
+    assert monitor.handle_onset({"onset": "x"}, 1000.0, "10.0.0.5")[0] == 400
+    assert monitor.handle_onset(
+        {"ip": "10.0.0.5", "port": 8080, "onset": 1000.0}, 1000.0, "9.9.9.9")[0] == 200
+
+
+def test_handle_onset_uses_source_ip(monitor):
+    # No ip in payload -> keyed by source IP + default agent port.
+    monitor.handle_onset({"onset": 1000.0}, 1000.0, "10.0.0.5")
+    assert "10.0.0.5:8080" in monitor._ONSET_STATE
 
 
 def test_control_forwards_with_auth_hash(mod, monkeypatch, tmp_path):

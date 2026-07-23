@@ -352,11 +352,14 @@ def handle_control(payload, forwarder=forward_control, now: float = None):
 # HTTP server
 # ---------------------------------------------------------------------------
 
-def handle_onset(payload, now):
-    ip = payload.get("ip")
+def handle_onset(payload, now, src_ip):
     onset = payload.get("onset")
-    if not ip or not isinstance(onset, (int, float)):
-        return 400, {"error": "ip and numeric onset required"}
+    if not isinstance(onset, (int, float)):
+        return 400, {"error": "numeric onset required"}
+    # Real senders post just {"onset": ...} — identify them by the request's
+    # source IP + the standard agent port. The simulator overrides ip/port so
+    # its many fake senders (all on 127.0.0.1) stay distinct.
+    ip = payload.get("ip") or src_ip
     endpoint = f"{ip}:{payload.get('port', AGENT_PORT)}"
     ingest_onset(endpoint, float(onset), now)
     return 200, {"ok": True}
@@ -431,7 +434,7 @@ def make_server(host: str, port: int) -> ThreadingHTTPServer:
             elif path == "/api/control":
                 code, resp = handle_control(body)
             elif path == "/api/onset":
-                code, resp = handle_onset(body, time.time())
+                code, resp = handle_onset(body, time.time(), self.client_address[0])
             elif path == "/api/alerts/dismiss":
                 code, resp = dismiss_alert(body.get("id"), body.get("token"), time.time())
             else:
