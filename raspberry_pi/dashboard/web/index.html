@@ -89,6 +89,7 @@
                  background: var(--bad); color: #fff; border-radius: 4px; cursor: pointer;
                  font-size: 12px; font-weight: 800; line-height: 18px; text-align: center; }
   .card.offline .notif-badge { right: 14px; }
+  .notif-badge.archived { background: var(--unsynced); }   /* grey: only archived remain */
   #notifList { min-width: 380px; max-height: 60vh; overflow: auto; }
   .alert { display: flex; align-items: center; justify-content: space-between; gap: 12px;
            background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
@@ -96,6 +97,8 @@
   .alert .msg { font-weight: 500; }
   .alert button { border-color: #fecaca; color: #991b1b; }
   .alert button:disabled { opacity: .5; cursor: not-allowed; }
+  .alert.archived { background: #f3f4f6; border-color: var(--line); color: var(--muted); }
+  .alert.archived .tag { font-size: 11px; color: #9ca3af; text-transform: uppercase; }
 </style>
 </head>
 <body>
@@ -334,14 +337,20 @@ function alertMsg(a) {
 
 // Show/hide the red "!" badge on each card based on its endpoint's active alerts.
 function syncBadges() {
-  const counts = {};
-  ALERTS.forEach(a => { counts[a.endpoint] = (counts[a.endpoint] || 0) + 1; });
+  const total = {}, active = {};
+  ALERTS.forEach(a => {
+    total[a.endpoint] = (total[a.endpoint] || 0) + 1;
+    if (!a.archived) active[a.endpoint] = (active[a.endpoint] || 0) + 1;
+  });
   document.querySelectorAll(".card[data-endpoint]").forEach(el => {
     const badge = el.querySelector(".notif-badge");
     if (!badge) return;
-    const n = counts[el.dataset.endpoint] || 0;
-    badge.style.display = n ? "block" : "none";
-    badge.title = `${n} pulse ${n === 1 ? "anomaly" : "anomalies"} — click to view`;
+    const t = total[el.dataset.endpoint] || 0, ac = active[el.dataset.endpoint] || 0;
+    badge.style.display = t ? "block" : "none";           // hidden only if none at all
+    badge.classList.toggle("archived", t > 0 && ac === 0); // grey when only archived remain
+    badge.title = ac > 0
+      ? `${ac} active pulse ${ac === 1 ? "anomaly" : "anomalies"} — click to view`
+      : `${t} archived pulse ${t === 1 ? "anomaly" : "anomalies"} — click to view`;
   });
 }
 
@@ -352,11 +361,14 @@ function renderNotifList() {
   $("notifTitle").textContent = items.length
     ? `Pulse anomalies — ${items[0].sender_name}` : "Pulse anomalies";
   const list = $("notifList");
-  if (!items.length) { list.innerHTML = `<div class="empty">No active notifications.</div>`; return; }
+  if (!items.length) { list.innerHTML = `<div class="empty">No notifications.</div>`; return; }
   list.innerHTML = items.map(a => {
+    if (a.archived) {   // kept for history, greyed, non-urgent, no action
+      return `<div class="alert archived"><span class="msg">${alertMsg(a)}</span><span class="tag">archived</span></div>`;
+    }
     const btn = TOKEN
-      ? `<button onclick="dismissAlert('${a.id}')">Dismiss</button>`
-      : `<button disabled title="Log in to dismiss">Dismiss</button>`;
+      ? `<button onclick="archiveAlert('${a.id}')">Archive</button>`
+      : `<button disabled title="Log in to archive">Archive</button>`;
     return `<div class="alert"><span class="msg">⚠ ${alertMsg(a)}</span>${btn}</div>`;
   }).join("");
 }
@@ -373,9 +385,9 @@ async function loadAlerts() {
   syncBadges();
   if ($("notifDialog").open) renderNotifList();   // keep an open panel fresh
 }
-async function dismissAlert(id) {
+async function archiveAlert(id) {
   if (!TOKEN) { authClick(); return; }
-  await api("/api/alerts/dismiss", { method: "POST",
+  await api("/api/alerts/archive", { method: "POST",
     body: JSON.stringify({ id, token: TOKEN }) });
   loadAlerts();
 }

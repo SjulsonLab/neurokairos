@@ -229,15 +229,19 @@ def test_watchdog_ignores_non_sending(monitor):
     assert monitor.watchdog_once(1010.0) == []
 
 
-def test_dismiss_requires_token(mod, monkeypatch, tmp_path, monitor):
+def test_archive_requires_token_and_keeps_alert(mod, monkeypatch, tmp_path, monitor):
     monkeypatch.setattr(mod, "AUTH_PATH", str(tmp_path / "auth.json"))
     monitor.ingest_onset(EP, 1000.0, 1000.0)
     a = monitor.ingest_onset(EP, 1002.0, 1002.0)   # 2 s -> alert
-    code, _ = mod.dismiss_alert(a["id"], "bogus")
+    code, _ = mod.archive_alert(a["id"], "bogus")
     assert code == 401 and len(mod.active_alerts()) == 1
     tok = mod.create_token(now=5)
-    code, _ = mod.dismiss_alert(a["id"], tok, now=5)
-    assert code == 200 and mod.active_alerts() == []
+    code, _ = mod.archive_alert(a["id"], tok, now=5)
+    assert code == 200
+    # Archived: gone from the (red) active set, but still present + flagged.
+    assert mod.active_alerts() == []
+    all_alerts = mod.list_alerts()
+    assert len(all_alerts) == 1 and all_alerts[0]["archived"] is True
 
 
 def test_handle_onset_validation(monitor):

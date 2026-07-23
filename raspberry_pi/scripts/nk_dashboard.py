@@ -210,7 +210,7 @@ def _raise_alert(endpoint, name, kind, onset_epoch, now, interval=None):
         "id": aid, "endpoint": endpoint, "sender_name": name, "kind": kind,
         "interval_s": None if interval is None else round(interval, 3),
         "onset_iso": _iso(onset_epoch), "created_iso": _iso(now),
-        "created_epoch": now, "dismissed": False,
+        "created_epoch": now, "archived": False,
     }
     _ALERTS[aid] = alert
     _log_alert(alert)
@@ -234,10 +234,11 @@ def ingest_onset(endpoint, onset, now):
     name = (_SENDER_META.get(endpoint) or {}).get("name", endpoint)
     prev = _ONSET_STATE.get(endpoint)
     _ONSET_STATE[endpoint] = onset
-    # Pulses resumed -> clear any active 'stopped' alert for this sender.
+    # Pulses resumed -> archive any active 'stopped' alert for this sender
+    # (kept for history, but no longer urgent).
     for a in _ALERTS.values():
-        if a["endpoint"] == endpoint and a["kind"] == "stopped" and not a["dismissed"]:
-            a["dismissed"] = True
+        if a["endpoint"] == endpoint and a["kind"] == "stopped" and not a["archived"]:
+            a["archived"] = True
     if prev is None:
         return None
     interval = onset - prev
@@ -260,17 +261,23 @@ def watchdog_once(now):
     return raised
 
 
+def list_alerts():
+    """All alerts (active + archived), newest first — the dialog shows both."""
+    return sorted(_ALERTS.values(), key=lambda a: a["created_epoch"], reverse=True)
+
+
 def active_alerts():
-    return sorted((a for a in _ALERTS.values() if not a["dismissed"]),
-                  key=lambda a: a["created_epoch"], reverse=True)
+    """Non-archived alerts only — these drive the red badge."""
+    return [a for a in list_alerts() if not a["archived"]]
 
 
-def dismiss_alert(alert_id, token, now=None):
+def archive_alert(alert_id, token, now=None):
+    """Archive (not delete) an alert: it stays visible but greyed/non-urgent."""
     if not check_token(token, now):
         return 401, {"error": "not authenticated"}
     a = _ALERTS.get(alert_id)
     if a:
-        a["dismissed"] = True
+        a["archived"] = True
     return 200, {"ok": True}
 
 
@@ -368,7 +375,7 @@ def handle_onset(payload, now, src_ip):
 def build_all_response():
     result = build_all(collect(discover_agents()))
     record_poll_meta(result["pis"])          # cache name/sending for alerts + watchdog
-    result["alerts"] = active_alerts()
+    result["alerts"] = list_alerts()
     return result
 
 
@@ -420,7 +427,7 @@ def make_server(host: str, port: int) -> ThreadingHTTPServer:
             elif path == "/api/all":
                 self._json(build_all_response())
             elif path == "/api/alerts":
-                self._json({"alerts": active_alerts()})
+                self._json({"alerts": list_alerts()})
             else:
                 self._json({"error": "not found"}, 404)
 
@@ -435,8 +442,8 @@ def make_server(host: str, port: int) -> ThreadingHTTPServer:
                 code, resp = handle_control(body)
             elif path == "/api/onset":
                 code, resp = handle_onset(body, time.time(), self.client_address[0])
-            elif path == "/api/alerts/dismiss":
-                code, resp = dismiss_alert(body.get("id"), body.get("token"), time.time())
+            elif path == "/api/alerts/archive":
+                code, resp = archive_alert(body.get("id"), body.get("token"), time.time())
             else:
                 code, resp = 404, {"error": "not found"}
             self._json(resp, code)
