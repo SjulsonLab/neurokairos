@@ -145,6 +145,11 @@ typedef struct {
     bool chrony_synced;            // true if leap status != "Not synchronised"
     double warn_threshold_ms;      // LED warning threshold (default 1.0)
     char led_original_trigger[64]; // saved LED trigger for cleanup
+
+    // Latest pulse-onset (rising-edge) time, CLOCK_REALTIME epoch ns. Written by
+    // the RT thread on each onset (one aligned store, no syscall); read by the
+    // main thread to publish onsets for cadence monitoring. 0 = none yet.
+    volatile uint64_t last_onset_realtime_ns;
 } irig_h_sender_t;
 
 void init_timing_constants(void);
@@ -981,6 +986,14 @@ void* continuous_irig_sending(void *arg) {
                 printf("Bit %d sent at system time: %ld.%09ld\n", i, current.tv_sec, current.tv_nsec);
             }
 
+            // Record the onset (rising-edge) wall-clock time for cadence
+            // monitoring. One vDSO clock read + one aligned store — negligible,
+            // and it does not move the absolute-scheduled edges. The main thread
+            // publishes this off the RT path.
+            struct timespec onset_rt;
+            clock_gettime(CLOCK_REALTIME, &onset_rt);
+            sender->last_onset_realtime_ns = timespec_to_ns(&onset_rt);
+
             uint64_t pulse_ns = (uint64_t)(sender->pulse_lengths[i] * NS_PER_SEC);
             ultra_fast_pulse(sender, pulse_ns);
         }
@@ -1045,6 +1058,7 @@ irig_h_sender_t* create_irig_h_sender(int gpio_pin, int inverted_gpio_pin) {
     sender->chrony_synced = false;
     sender->warn_threshold_ms = 1.0;
     sender->led_original_trigger[0] = '\0';
+    sender->last_onset_realtime_ns = 0;
 
     time_t now = time(NULL);
     struct tm *tm_info = gmtime(&now); // UTC timestamp in filename for consistency
@@ -1116,6 +1130,31 @@ void write_latency_log(irig_h_sender_t *sender) {
     fclose(fp);
     printf("Latency log written to %s (%zu pulses)\n",
            latency_log_path, sender->pulse_count);
+}
+
+// Publish recent pulse onsets to /run/neurokairos/irig_onsets (last ONSET_RING,
+// one epoch-seconds value per line) for the status agent to relay to the
+// dashboard. Called from the main (non-RT) thread, so file IO is safe here.
+#define ONSET_FILE_PATH "/run/neurokairos/irig_onsets"
+#define ONSET_RING 8
+static void publish_onset(uint64_t onset_ns) {
+    static uint64_t ring[ONSET_RING];
+    static int count = 0;
+    if (count < ONSET_RING) {
+        ring[count++] = onset_ns;
+    } else {
+        memmove(ring, ring + 1, (ONSET_RING - 1) * sizeof(uint64_t));
+        ring[ONSET_RING - 1] = onset_ns;
+    }
+    mkdir("/run/neurokairos", 0755);  // idempotent
+    const char *tmp = ONSET_FILE_PATH ".tmp";
+    FILE *fp = fopen(tmp, "w");
+    if (!fp) return;
+    for (int i = 0; i < count; i++) {
+        fprintf(fp, "%.9f\n", (double)ring[i] / 1e9);
+    }
+    fclose(fp);
+    rename(tmp, ONSET_FILE_PATH);
 }
 
 void finish_irig_sender(irig_h_sender_t *sender) {
@@ -1312,8 +1351,17 @@ int main(int argc, char *argv[]) {
     start_irig_sender(sender);
     printf("IRIG-H transmission started\n");
 
+    // Publish pulse onsets off the RT thread: poll the latest onset the sender
+    // thread recorded and, when it changes, append it to the onset file.
+    uint64_t last_published = 0;
     while (running) {
-        sleep(1);
+        uint64_t onset = sender->last_onset_realtime_ns;
+        if (onset != 0 && onset != last_published) {
+            last_published = onset;
+            publish_onset(onset);
+        }
+        struct timespec poll = {0, 100 * 1000 * 1000};  // 100 ms
+        nanosleep(&poll, NULL);
     }
 
     printf("Stopping IRIG-H sender...\n");
