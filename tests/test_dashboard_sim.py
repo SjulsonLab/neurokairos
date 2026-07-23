@@ -71,6 +71,15 @@ def test_control_requires_matching_auth(sim):
     assert code == 200 and agent.name == "New"
 
 
+def test_onset_suppressed_injects_anomalies(sim):
+    # A normal sender always emits; the flaky ones skip on schedule.
+    assert not any(sim.onset_suppressed("Rig Alpha", s) for s in range(120))
+    assert sim.onset_suppressed("Rig Echo", 7) is True          # skipped beat
+    assert sim.onset_suppressed("Rig Echo", 8) is False
+    assert sim.onset_suppressed("Rig Golf", 23) is True         # in stall window
+    assert sim.onset_suppressed("Rig Golf", 30) is False
+
+
 def test_reboot_marks_down(sim):
     agent = sim.FakeAgent(sim._profiles()[0], "127.0.0.1")
     agent.set_auth({"hash": "c" * 64})

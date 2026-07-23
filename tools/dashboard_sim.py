@@ -31,6 +31,7 @@ import random
 import tempfile
 import threading
 import time
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -208,6 +209,49 @@ def build_agents(base_port=8101):
     return agents, servers, listing
 
 
+# --- simulated pulse onsets (drives the server's cadence monitoring) --------
+
+def onset_suppressed(name, second):
+    """When a fake sender should SKIP emitting an onset, to demo alerts.
+
+    'Rig Echo' skips one beat every 15 s -> a ~2 s interval -> interval alert.
+    'Rig Golf' goes silent for a ~6 s window each 40 s (still online) -> the
+    server's watchdog raises a 'pulses stopped' alert, then it resumes.
+    """
+    if name == "Rig Echo" and second % 15 == 7:
+        return True
+    if name == "Rig Golf" and (second % 40) in range(22, 28):
+        return True
+    return False
+
+
+def _post_onset(dash_port, agent_port, onset):
+    body = json.dumps({"ip": "127.0.0.1", "port": agent_port, "onset": onset}).encode()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{dash_port}/api/onset", data=body,
+            headers={"Content-Type": "application/json"}, method="POST")
+        urllib.request.urlopen(req, timeout=1)
+    except Exception:
+        pass
+
+
+def onset_pusher(agents, dash_port, stop):
+    second = 0
+    while not stop.is_set():
+        now = time.time()
+        for agent, port in agents:
+            if agent.p["role"] == "server":
+                continue                       # servers don't emit the timecode dot
+            if now < agent.down_until:
+                continue                       # rebooted/off -> offline
+            if onset_suppressed(agent.name, second):
+                continue
+            _post_onset(dash_port, port, now)
+        second += 1
+        stop.wait(1.0)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="Local NeuroKairos dashboard simulator")
     p.add_argument("--port", type=int, default=8090, help="dashboard port (default 8090)")
@@ -233,6 +277,17 @@ def main(argv=None):
     dt = threading.Thread(target=dash.serve_forever, daemon=True)
     dt.start()
 
+    stop = threading.Event()
+
+    def watchdog():
+        while not stop.is_set():
+            DASH.watchdog_once(time.time())
+            stop.wait(1.0)
+
+    threading.Thread(target=watchdog, daemon=True).start()
+    threading.Thread(target=onset_pusher, args=(agents, args.port, stop),
+                     daemon=True).start()
+
     url = f"http://127.0.0.1:{args.port}"
     print("=" * 60)
     print(" NeuroKairos dashboard simulator (local only — no network)")
@@ -240,6 +295,8 @@ def main(argv=None):
     print(f"   Open:  {url}")
     print("   First visit sets a dashboard password; then try renaming,")
     print("   restarting, rebooting (a box goes 'offline' ~8s), set-NTP.")
+    print("   Pulse-cadence alerts: 'Rig Echo' skips a beat every ~15 s, and")
+    print("   'Rig Golf' goes silent ~6 s each 40 s (stopped-pulse alert).")
     print("   Ctrl-C to stop.")
     print("=" * 60)
     try:
@@ -248,6 +305,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         print("\n[sim] shutting down")
     finally:
+        stop.set()
         dash.shutdown()
         for srv, _ in threads:
             srv.shutdown()

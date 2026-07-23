@@ -82,6 +82,14 @@
   dialog input { width: 100%; padding: 8px; border: 1px solid var(--line);
                  border-radius: 7px; font: inherit; margin-bottom: 12px; }
   dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
+
+  .alert-strip { padding: 0 20px; }
+  .alert { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+           background: #fef2f2; border: 1px solid #fecaca; color: #991b1b;
+           border-radius: 8px; padding: 8px 12px; margin: 10px 0 0; font-size: 13px; }
+  .alert .msg { font-weight: 500; }
+  .alert button { border-color: #fecaca; color: #991b1b; }
+  .alert button:disabled { opacity: .5; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -92,6 +100,8 @@
   <span class="updated" id="updated"></span>
   <button id="authBtn" onclick="authClick()">…</button>
 </header>
+
+<div id="alerts" class="alert-strip"></div>
 
 <main>
   <div id="loading" class="empty">Searching for NeuroKairos devices…</div>
@@ -301,6 +311,30 @@ function renderSection(secId, listId, items) {
   $(listId).innerHTML = items.map(card).join("");
 }
 
+function renderAlerts(alerts) {
+  const el = $("alerts");
+  if (!alerts || !alerts.length) { el.innerHTML = ""; return; }
+  el.innerHTML = alerts.map(a => {
+    const msg = a.kind === "stopped"
+      ? `${a.sender_name}: IRIG-H pulses stopped (last onset ${a.onset_iso})`
+      : `${a.sender_name}: pulse interval ${a.interval_s.toFixed(2)} s (expected 1.00 s) at ${a.onset_iso}`;
+    const btn = TOKEN
+      ? `<button onclick="dismissAlert('${a.id}')">Dismiss</button>`
+      : `<button disabled title="Log in to dismiss">Dismiss</button>`;
+    return `<div class="alert"><span class="msg">⚠ ${msg}</span>${btn}</div>`;
+  }).join("");
+}
+async function loadAlerts() {
+  const r = await api("/api/alerts");
+  renderAlerts(r.body && r.body.alerts);
+}
+async function dismissAlert(id) {
+  if (!TOKEN) { authClick(); return; }
+  await api("/api/alerts/dismiss", { method: "POST",
+    body: JSON.stringify({ id, token: TOKEN }) });
+  loadAlerts();
+}
+
 async function load() {
   const r = await api("/api/all");
   const pis = (r.body && r.body.pis) || [];
@@ -316,7 +350,9 @@ async function init() {
   CONFIGURED = !!(r.body && r.body.configured);
   refreshAuthBtn();
   await load();
+  await loadAlerts();
   setInterval(load, 2000);
+  setInterval(loadAlerts, 750);   // near-instant pulse-anomaly banners
   setInterval(animateLeds, 50);   // mirror each sender's IRIG-H pin in real time
 }
 init();

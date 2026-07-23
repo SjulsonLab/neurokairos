@@ -24,10 +24,19 @@ import json
 import os
 import socket
 import subprocess
+import threading
+import time
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 AGENT_PORT = 8080
+
+ONSET_FILE = "/run/neurokairos/irig_onsets"
+DASHBOARD_SERVICE = "_neurokairos-dashboard._tcp"
+ONSET_POLL_S = 0.1
+DASHBOARD_REFRESH_S = 30
 
 NAME_PATH = "/var/lib/neurokairos/name"
 AUTH_PATH = "/var/lib/neurokairos/agent-auth"
@@ -324,6 +333,84 @@ def handle_set_auth(payload: dict):
 
 
 # ---------------------------------------------------------------------------
+# Pulse-onset relay — push the sender's real pin onsets to the dashboard(s)
+# ---------------------------------------------------------------------------
+
+def parse_onsets(text: str):
+    """Parse the sender's onset file (one epoch-seconds float per line)."""
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(float(line))
+        except ValueError:
+            continue
+    return out
+
+
+def select_new_onsets(onsets, after: float):
+    """Onsets strictly newer than the last one already pushed."""
+    return [o for o in onsets if o > after]
+
+
+def _parse_dashboard_browse(text: str):
+    """Parse `avahi-browse -rpt _neurokairos-dashboard._tcp` into [(ip, port)]."""
+    found = set()
+    for line in text.splitlines():
+        if not line.startswith("="):
+            continue
+        f = line.split(";")
+        if len(f) < 9 or f[2] != "IPv4":
+            continue
+        ip, port = f[7].strip(), f[8].strip()
+        if port.isdigit():
+            found.add((ip, int(port)))
+    return sorted(found)
+
+
+def discover_dashboards():
+    try:
+        r = subprocess.run(["avahi-browse", "-rpt", DASHBOARD_SERVICE],
+                           capture_output=True, text=True, timeout=30)
+        return _parse_dashboard_browse(r.stdout)
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def push_onset(dashboards, payload):
+    body = json.dumps(payload).encode("utf-8")
+    for ip, port in dashboards:
+        try:
+            req = urllib.request.Request(
+                f"http://{ip}:{port}/api/onset", data=body,
+                headers={"Content-Type": "application/json"}, method="POST")
+            urllib.request.urlopen(req, timeout=2)
+        except (urllib.error.URLError, OSError):
+            continue  # fire-and-forget; next onset retries
+
+
+def onset_relay_loop(stop=None):
+    """Poll the onset file and push new onsets to discovered dashboards."""
+    hostname = socket.gethostname()
+    ip = get_primary_ip()
+    last_pushed = 0.0
+    dashboards = []
+    last_refresh = -DASHBOARD_REFRESH_S
+    while stop is None or not stop.is_set():
+        now = time.monotonic()
+        if now - last_refresh >= DASHBOARD_REFRESH_S:
+            dashboards = discover_dashboards()
+            last_refresh = now
+        for onset in select_new_onsets(parse_onsets(read_text(ONSET_FILE)), last_pushed):
+            push_onset(dashboards,
+                       {"hostname": hostname, "ip": ip, "port": AGENT_PORT, "onset": onset})
+            last_pushed = onset
+        time.sleep(ONSET_POLL_S)
+
+
+# ---------------------------------------------------------------------------
 # HTTP server
 # ---------------------------------------------------------------------------
 
@@ -379,6 +466,7 @@ def main(argv=None):
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=AGENT_PORT)
     args = p.parse_args(argv)
+    threading.Thread(target=onset_relay_loop, daemon=True).start()
     make_server(args.host, args.port).serve_forever()
 
 

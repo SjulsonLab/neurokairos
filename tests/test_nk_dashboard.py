@@ -164,6 +164,88 @@ def test_control_needs_target_and_action(mod, monkeypatch, tmp_path):
     assert code == 400
 
 
+# --- pulse-cadence monitoring ----------------------------------------------
+
+EP = "10.0.0.5:8080"   # endpoint key (ip:port)
+
+
+@pytest.fixture
+def monitor(mod, monkeypatch, tmp_path):
+    monkeypatch.setattr(mod, "ALERTS_LOG", str(tmp_path / "anomalies.log"))
+    mod.reset_monitor_state()
+    mod.record_poll_meta([
+        {"ip": "10.0.0.5", "endpoint": EP, "name": "Rig A", "role": "client",
+         "services": {"irig-sender": True}},
+    ])
+    return mod
+
+
+def test_ingest_good_intervals_no_alert(monitor):
+    assert monitor.ingest_onset(EP, 1000.0, 1000.0) is None
+    assert monitor.ingest_onset(EP, 1001.0, 1001.0) is None    # 1.00 s
+    assert monitor.ingest_onset(EP, 1002.05, 1002.05) is None  # 1.05 s ok
+    assert monitor.active_alerts() == []
+
+
+def test_ingest_long_interval_alerts(monitor):
+    monitor.ingest_onset(EP, 1000.0, 1000.0)
+    a = monitor.ingest_onset(EP, 1001.6, 1001.6)   # 1.6 s gap
+    assert a is not None and a["kind"] == "interval"
+    assert a["interval_s"] == 1.6
+    assert a["sender_name"] == "Rig A"
+    assert len(monitor.active_alerts()) == 1
+
+
+def test_ingest_short_interval_alerts(monitor):
+    monitor.ingest_onset(EP, 1000.0, 1000.0)
+    a = monitor.ingest_onset(EP, 1000.3, 1000.3)   # 0.3 s gap
+    assert a is not None and a["interval_s"] == 0.3
+
+
+def test_ingest_dedup(monitor):
+    monitor.ingest_onset(EP, 1000.0, 1000.0)
+    monitor.ingest_onset(EP, 1001.6, 1001.6)
+    n = len(monitor._ALERTS)
+    monitor.ingest_onset(EP, 1001.6, 1001.6)   # idempotent id -> no new alert
+    assert len(monitor._ALERTS) == n
+
+
+def test_watchdog_stopped_and_resume(monitor):
+    monitor.ingest_onset(EP, 1000.0, 1000.0)
+    monitor.ingest_onset(EP, 1001.0, 1001.0)
+    raised = monitor.watchdog_once(1006.0)          # 5 s silent while sending
+    assert len(raised) == 1 and raised[0]["kind"] == "stopped"
+    assert len(monitor.active_alerts()) == 1
+    assert monitor.watchdog_once(1007.0) == []      # no duplicate
+    monitor.ingest_onset(EP, 1007.0, 1007.0)        # resume clears stopped
+    assert [a for a in monitor.active_alerts() if a["kind"] == "stopped"] == []
+
+
+def test_watchdog_ignores_non_sending(monitor):
+    monitor.record_poll_meta([
+        {"ip": "10.0.0.9", "endpoint": "10.0.0.9:8080", "name": "Idle",
+         "role": "client", "services": {"irig-sender": False}}])
+    monitor.ingest_onset("10.0.0.9:8080", 1000.0, 1000.0)
+    assert monitor.watchdog_once(1010.0) == []
+
+
+def test_dismiss_requires_token(mod, monkeypatch, tmp_path, monitor):
+    monkeypatch.setattr(mod, "AUTH_PATH", str(tmp_path / "auth.json"))
+    monitor.ingest_onset(EP, 1000.0, 1000.0)
+    a = monitor.ingest_onset(EP, 1002.0, 1002.0)   # 2 s -> alert
+    code, _ = mod.dismiss_alert(a["id"], "bogus")
+    assert code == 401 and len(mod.active_alerts()) == 1
+    tok = mod.create_token(now=5)
+    code, _ = mod.dismiss_alert(a["id"], tok, now=5)
+    assert code == 200 and mod.active_alerts() == []
+
+
+def test_handle_onset_validation(monitor):
+    assert monitor.handle_onset({"ip": "10.0.0.5"}, 1000.0)[0] == 400
+    assert monitor.handle_onset({"onset": 1.0}, 1000.0)[0] == 400
+    assert monitor.handle_onset({"ip": "10.0.0.5", "port": 8080, "onset": 1000.0}, 1000.0)[0] == 200
+
+
 def test_control_forwards_with_auth_hash(mod, monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "AUTH_PATH", str(tmp_path / "auth.json"))
     mod.store_password_hash(mod.hash_password("pw"))

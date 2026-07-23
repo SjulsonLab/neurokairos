@@ -23,6 +23,7 @@ import json
 import os
 import secrets
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -168,6 +169,112 @@ def check_token(token: str, now: float = None) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Pulse-cadence monitoring: onsets must be 1.000 s apart
+# ---------------------------------------------------------------------------
+
+ALERTS_LOG = "/var/lib/neurokairos/pulse-anomalies.log"
+INTERVAL_MIN = 0.9
+INTERVAL_MAX = 1.1
+STOPPED_THRESHOLD_S = 3.0
+
+_ONSET_STATE = {}   # endpoint "ip:port" -> last onset epoch (float)
+_SENDER_META = {}   # endpoint -> {"name": str, "sending": bool}
+_ALERTS = {}        # id -> alert dict
+
+
+def reset_monitor_state():
+    _ONSET_STATE.clear()
+    _SENDER_META.clear()
+    _ALERTS.clear()
+
+
+def _iso(epoch: float) -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(epoch))
+
+
+def _log_alert(alert: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(ALERTS_LOG), exist_ok=True)
+        with open(ALERTS_LOG, "a") as f:
+            f.write(json.dumps(alert) + "\n")
+    except OSError:
+        pass
+
+
+def _raise_alert(endpoint, name, kind, onset_epoch, now, interval=None):
+    """Create+log an alert if this exact one isn't already active."""
+    aid = f"{endpoint}:{kind}:{onset_epoch}"
+    if aid in _ALERTS:
+        return None
+    alert = {
+        "id": aid, "endpoint": endpoint, "sender_name": name, "kind": kind,
+        "interval_s": None if interval is None else round(interval, 3),
+        "onset_iso": _iso(onset_epoch), "created_iso": _iso(now),
+        "created_epoch": now, "dismissed": False,
+    }
+    _ALERTS[aid] = alert
+    _log_alert(alert)
+    return alert
+
+
+def record_poll_meta(pis):
+    """Cache sender name + sending state from an /api/all poll, keyed by endpoint."""
+    for p in pis:
+        endpoint = p.get("endpoint") or p.get("ip")
+        if not endpoint:
+            continue
+        _SENDER_META[endpoint] = {
+            "name": p.get("name") or p.get("hostname") or endpoint,
+            "sending": bool((p.get("services") or {}).get("irig-sender")),
+        }
+
+
+def ingest_onset(endpoint, onset, now):
+    """Record an onset; raise an interval alert if spacing is off. Returns alert|None."""
+    name = (_SENDER_META.get(endpoint) or {}).get("name", endpoint)
+    prev = _ONSET_STATE.get(endpoint)
+    _ONSET_STATE[endpoint] = onset
+    # Pulses resumed -> clear any active 'stopped' alert for this sender.
+    for a in _ALERTS.values():
+        if a["endpoint"] == endpoint and a["kind"] == "stopped" and not a["dismissed"]:
+            a["dismissed"] = True
+    if prev is None:
+        return None
+    interval = onset - prev
+    if interval < INTERVAL_MIN or interval > INTERVAL_MAX:
+        return _raise_alert(endpoint, name, "interval", onset, now, interval=interval)
+    return None
+
+
+def watchdog_once(now):
+    """Raise a 'stopped' alert for senders that were pulsing but went silent."""
+    raised = []
+    for endpoint, last in _ONSET_STATE.items():
+        meta = _SENDER_META.get(endpoint)
+        if not meta or not meta["sending"]:
+            continue
+        if now - last > STOPPED_THRESHOLD_S:
+            a = _raise_alert(endpoint, meta["name"], "stopped", last, now)
+            if a:
+                raised.append(a)
+    return raised
+
+
+def active_alerts():
+    return sorted((a for a in _ALERTS.values() if not a["dismissed"]),
+                  key=lambda a: a["created_epoch"], reverse=True)
+
+
+def dismiss_alert(alert_id, token, now=None):
+    if not check_token(token, now):
+        return 401, {"error": "not authenticated"}
+    a = _ALERTS.get(alert_id)
+    if a:
+        a["dismissed"] = True
+    return 200, {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # Request handlers (pure-ish: I/O injected where practical)
 # ---------------------------------------------------------------------------
 
@@ -245,6 +352,23 @@ def handle_control(payload, forwarder=forward_control, now: float = None):
 # HTTP server
 # ---------------------------------------------------------------------------
 
+def handle_onset(payload, now):
+    ip = payload.get("ip")
+    onset = payload.get("onset")
+    if not ip or not isinstance(onset, (int, float)):
+        return 400, {"error": "ip and numeric onset required"}
+    endpoint = f"{ip}:{payload.get('port', AGENT_PORT)}"
+    ingest_onset(endpoint, float(onset), now)
+    return 200, {"ok": True}
+
+
+def build_all_response():
+    result = build_all(collect(discover_agents()))
+    record_poll_meta(result["pis"])          # cache name/sending for alerts + watchdog
+    result["alerts"] = active_alerts()
+    return result
+
+
 def read_index() -> str:
     path = os.path.join(web_dir(), "index.html")
     try:
@@ -291,22 +415,28 @@ def make_server(host: str, port: int) -> ThreadingHTTPServer:
                 _, body = handle_auth_status()
                 self._json(body)
             elif path == "/api/all":
-                self._json(build_all(collect(discover_agents())))
+                self._json(build_all_response())
+            elif path == "/api/alerts":
+                self._json({"alerts": active_alerts()})
             else:
                 self._json({"error": "not found"}, 404)
 
         def do_POST(self):  # noqa: N802
             path = urlparse(self.path).path
-            routes = {
-                "/api/set-password": handle_set_password,
-                "/api/login": handle_login,
-                "/api/control": handle_control,
-            }
-            if path in routes:
-                code, body = routes[path](self._body())
-                self._json(body, code)
+            body = self._body()
+            if path == "/api/set-password":
+                code, resp = handle_set_password(body)
+            elif path == "/api/login":
+                code, resp = handle_login(body)
+            elif path == "/api/control":
+                code, resp = handle_control(body)
+            elif path == "/api/onset":
+                code, resp = handle_onset(body, time.time())
+            elif path == "/api/alerts/dismiss":
+                code, resp = dismiss_alert(body.get("id"), body.get("token"), time.time())
             else:
-                self._json({"error": "not found"}, 404)
+                code, resp = 404, {"error": "not found"}
+            self._json(resp, code)
 
         def log_message(self, *args):
             return
@@ -320,6 +450,13 @@ def main(argv=None):
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=DASHBOARD_PORT)
     args = p.parse_args(argv)
+
+    def _watchdog():
+        while True:
+            watchdog_once(time.time())
+            time.sleep(1)
+    threading.Thread(target=_watchdog, daemon=True).start()
+
     make_server(args.host, args.port).serve_forever()
 
 
