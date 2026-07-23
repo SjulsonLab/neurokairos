@@ -46,10 +46,13 @@
     border-radius: 50%; background: var(--unsynced);
     border: 1px solid rgba(0,0,0,.12);
   }
-  .led.sending { background: var(--led); box-shadow: 0 0 6px rgba(37,99,235,.6);
-                 animation: pulse 1s steps(1, end) infinite; }
-  .led.off { background: var(--unsynced); }
-  @keyframes pulse { 50% { background: transparent; box-shadow: none; } }
+  /* IRIG-H output mirror: the dot is a live reflection of the sender's GPIO pin
+     — present (blue) while the pin is HIGH, absent while LOW, driven by the
+     clock-reconstructed IRIG-H waveform. Like an LED wired to the pin. */
+  .led.irig { background: transparent; border-color: transparent; box-shadow: none;
+              transition: opacity .04s linear; opacity: 0; }
+  .led.irig.on { opacity: 1; background: var(--led); border-color: rgba(0,0,0,.12);
+                 box-shadow: 0 0 6px rgba(37,99,235,.6); }
 
   .name { font-size: 16px; font-weight: 650; margin: 0 22px 2px 0; cursor: text; }
   .name:hover { text-decoration: underline dotted; }
@@ -130,6 +133,67 @@ function fmtSec(s) {
 }
 function fmt(v, unit) { return (v === null || v === undefined) ? "—" : v + (unit || ""); }
 
+// --- IRIG-H waveform reconstruction (mirrors irig_sender.c) ---------------
+// The dashboard can't poll a sub-second GPIO signal, so it rebuilds the exact
+// IRIG-H pulse train from the current UTC time (frames align to the minute;
+// each of the 60 seconds carries one pulse: 0.2 s = binary 0, 0.5 s = 1,
+// 0.8 s = position marker). This matches generate_irig_h_frame()/
+// calculate_pulse_length(), including the NeuroKairos status bits (43-44
+// stratum, 46-48 root-dispersion bucket).
+const IRIG_W = {
+  seconds: [1,2,4,8,10,20,40], minutes: [1,2,4,8,10,20,40], hours: [1,2,4,8,10,20],
+  doy: [1,2,4,8,10,20,40,80,100,200], decis: [1,2,4,8], years: [1,2,4,8,10,20,40,80],
+};
+function irigBcd(value, weights) {
+  const r = weights.map(() => 0);
+  for (let i = weights.length - 1; i >= 0; i--) {
+    if (weights[i] <= value) { r[i] = 1; value -= weights[i]; }
+  }
+  return r;
+}
+function irigDoy(d) {
+  return Math.floor((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+                     - Date.UTC(d.getUTCFullYear(), 0, 0)) / 86400000);
+}
+function irigDispBucket(sec) {
+  if (sec == null) return 7;
+  const ms = sec * 1000, bounds = [0.25, 0.5, 1, 2, 4, 8, 16];
+  for (let i = 0; i < bounds.length; i++) if (ms < bounds[i]) return i;
+  return 7;
+}
+// 60 pulse widths (seconds) for the frame covering `date`'s minute.
+function irigWidths(date, stratum, dispSec) {
+  const sec = irigBcd(0, IRIG_W.seconds), min = irigBcd(date.getUTCMinutes(), IRIG_W.minutes),
+        hr = irigBcd(date.getUTCHours(), IRIG_W.hours), doy = irigBcd(irigDoy(date), IRIG_W.doy),
+        dec = irigBcd(0, IRIG_W.decis), yr = irigBcd(date.getUTCFullYear() % 100, IRIG_W.years);
+  const b = new Array(60).fill(0); let p = 0;   // 0=ZERO, 1=ONE, 2=marker
+  const data = (a, lo, hi) => { for (let i = lo; i < hi; i++) b[p++] = a[i] ? 1 : 0; };
+  b[p++] = 2;
+  data(sec, 0, 4); b[p++] = 0; data(sec, 4, 7); b[p++] = 2;
+  data(min, 0, 4); b[p++] = 0; data(min, 4, 7); b[p++] = 0; b[p++] = 2;
+  data(hr, 0, 4); b[p++] = 0; data(hr, 4, 6); b[p++] = 0; b[p++] = 0; b[p++] = 2;
+  data(doy, 0, 4); b[p++] = 0; data(doy, 4, 8); b[p++] = 2;
+  data(doy, 8, 10); b[p++] = 0; b[p++] = 0; b[p++] = 0; data(dec, 0, 4); b[p++] = 2;
+  data(yr, 0, 4); b[p++] = 0; data(yr, 4, 8); b[p++] = 2;
+  const s = stratum === 1 ? 0 : stratum === 2 ? 1 : stratum === 3 ? 2 : 3;
+  b[43] = (s & 1) ? 1 : 0; b[44] = (s & 2) ? 1 : 0;
+  const dsp = irigDispBucket(dispSec);
+  b[46] = (dsp & 1) ? 1 : 0; b[47] = (dsp & 2) ? 1 : 0; b[48] = (dsp & 4) ? 1 : 0;
+  return b.map(v => v === 2 ? 0.8 : v === 1 ? 0.5 : 0.2);
+}
+function irigPinHigh(el, nowMs) {
+  if (el.dataset.sending !== "1") return false;     // not transmitting -> idle LOW
+  const d = new Date(nowMs);
+  const widths = irigWidths(d, +el.dataset.stratum || 0,
+                            el.dataset.disp === "" ? null : +el.dataset.disp);
+  return (d.getUTCMilliseconds() / 1000) < widths[d.getUTCSeconds()];
+}
+function animateLeds() {
+  const now = Date.now();
+  document.querySelectorAll(".led.irig").forEach(el =>
+    el.classList.toggle("on", irigPinHigh(el, now)));
+}
+
 function refreshAuthBtn() {
   if (TOKEN) $("authBtn").textContent = "Log out";
   else if (CONFIGURED) $("authBtn").textContent = "Log in";
@@ -192,14 +256,15 @@ function card(pi) {
     return `<div class="card offline"><div class="name">${pi.name || pi.ip}</div>
       <div class="sub">${pi.ip} · offline</div></div>`;
   }
-  // Blue dot = "actively sending IRIG-H", shown on senders only. It blinks
-  // (~1 Hz, matching the one-pulse-per-second IRIG-H frame) whenever the
-  // sender's irig-sender service is running; off/grey if stopped. Servers
-  // don't emit the timecode to the acquisition rig, so they get no dot.
+  // Blue dot mirrors the sender's IRIG-H output GPIO pin: present while HIGH,
+  // absent while LOW. The waveform is reconstructed from the clock by
+  // animateLeds() using the data attributes below. Senders only — servers get
+  // no dot. If irig-sender isn't running (data-sending=0) the pin is idle LOW,
+  // so the dot stays absent.
   const isSender = pi.role !== "server";
   const sending = !!(pi.services && pi.services["irig-sender"]);
   const dot = isSender
-    ? `<div class="led ${sending ? "sending" : "off"}" title="IRIG-H: ${sending ? "sending" : "stopped"}"></div>`
+    ? `<div class="led irig" data-sending="${sending ? 1 : 0}" data-stratum="${t.stratum || 0}" data-disp="${t.root_dispersion_s == null ? "" : t.root_dispersion_s}" title="IRIG-H output (mirrors the GPIO pin)"></div>`
     : "";
   const cal = pi.calibrator;
   const rows = [
@@ -252,6 +317,7 @@ async function init() {
   refreshAuthBtn();
   await load();
   setInterval(load, 2000);
+  setInterval(animateLeds, 50);   // mirror each sender's IRIG-H pin in real time
 }
 init();
 </script>
