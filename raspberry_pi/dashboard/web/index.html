@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NeuroKairos</title>
+<style>
+  :root {
+    --good: #16a34a; --marginal: #d97706; --bad: #dc2626;
+    --unsynced: #9ca3af; --led: #2563eb; --ink: #111827; --muted: #6b7280;
+    --line: #e5e7eb; --bg: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px;
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 18px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+  header .spacer { flex: 1; }
+  header .updated { color: var(--muted); font-size: 12px; }
+  button {
+    font: inherit; border: 1px solid var(--line); background: #fff; color: var(--ink);
+    border-radius: 7px; padding: 5px 10px; cursor: pointer;
+  }
+  button:hover { background: #f9fafb; }
+  button.danger { color: var(--bad); border-color: #fecaca; }
+  button.primary { background: var(--led); color: #fff; border-color: var(--led); }
+
+  #grid { display: flex; flex-wrap: wrap; gap: 16px; padding: 20px; align-content: flex-start; }
+  .card {
+    position: relative; width: 320px; border: 1px solid var(--line);
+    border-radius: 12px; padding: 16px 16px 12px; background: #fff;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  }
+  .card.offline { opacity: .55; }
+  .led {
+    position: absolute; top: 12px; right: 14px; width: 11px; height: 11px;
+    border-radius: 50%; background: var(--unsynced);
+    border: 1px solid rgba(0,0,0,.12);
+  }
+  .led.solid { background: var(--led); box-shadow: 0 0 6px rgba(37,99,235,.6); }
+  .led.blink { background: var(--led); animation: pulse 1s steps(1,end) infinite; }
+  @keyframes pulse { 50% { background: transparent; box-shadow: none; } }
+
+  .name { font-size: 16px; font-weight: 650; margin: 0 22px 2px 0; cursor: text; }
+  .name:hover { text-decoration: underline dotted; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  .badge {
+    display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); vertical-align: middle;
+  }
+  .quality { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--unsynced); }
+  .q-good .dot { background: var(--good); } .q-good { color: var(--good); }
+  .q-marginal .dot { background: var(--marginal); } .q-marginal { color: var(--marginal); }
+  .q-bad .dot { background: var(--bad); } .q-bad { color: var(--bad); }
+  .q-unsynced .dot { background: var(--unsynced); } .q-unsynced { color: var(--unsynced); }
+
+  table.fields { width: 100%; border-collapse: collapse; margin: 8px 0; }
+  table.fields td { padding: 2px 0; font-size: 13px; vertical-align: top; }
+  table.fields td.k { color: var(--muted); width: 42%; }
+  table.fields td.v { text-align: right; font-variant-numeric: tabular-nums; }
+  .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;
+             border-top: 1px solid var(--line); padding-top: 10px; }
+  .actions button { font-size: 12px; padding: 4px 8px; }
+  .empty { color: var(--muted); padding: 40px 20px; }
+
+  dialog { border: 1px solid var(--line); border-radius: 12px; padding: 20px; min-width: 280px; }
+  dialog h3 { margin: 0 0 12px; font-size: 16px; }
+  dialog input { width: 100%; padding: 8px; border: 1px solid var(--line);
+                 border-radius: 7px; font: inherit; margin-bottom: 12px; }
+  dialog .row { display: flex; gap: 8px; justify-content: flex-end; }
+</style>
+</head>
+<body>
+<header>
+  <h1>NeuroKairos</h1>
+  <span class="badge" id="count">—</span>
+  <span class="spacer"></span>
+  <span class="updated" id="updated"></span>
+  <button id="authBtn" onclick="authClick()">…</button>
+</header>
+
+<main><div id="grid"><div class="empty">Searching for NeuroKairos devices…</div></div></main>
+
+<dialog id="pwDialog">
+  <h3 id="pwTitle">Log in</h3>
+  <input type="password" id="pwInput" placeholder="Password" autocomplete="current-password">
+  <input type="password" id="pwCurrent" placeholder="Current password" style="display:none">
+  <div class="row">
+    <button onclick="pwDialog.close()">Cancel</button>
+    <button class="primary" id="pwOk" onclick="pwSubmit()">OK</button>
+  </div>
+</dialog>
+
+<script>
+"use strict";
+let TOKEN = sessionStorage.getItem("nk_token") || null;
+let CONFIGURED = false;
+
+const $ = (id) => document.getElementById(id);
+const api = async (path, opts) => {
+  const r = await fetch(path, opts);
+  let body = {}; try { body = await r.json(); } catch (e) {}
+  return { ok: r.ok, status: r.status, body };
+};
+
+function fmtSec(s) {
+  if (s === null || s === undefined) return "—";
+  const us = Math.abs(s) * 1e6;
+  if (us < 1000) return us.toFixed(1) + " µs";
+  return (us / 1000).toFixed(3) + " ms";
+}
+function fmt(v, unit) { return (v === null || v === undefined) ? "—" : v + (unit || ""); }
+
+function refreshAuthBtn() {
+  if (TOKEN) $("authBtn").textContent = "Log out";
+  else if (CONFIGURED) $("authBtn").textContent = "Log in";
+  else $("authBtn").textContent = "Set password";
+}
+
+function authClick() {
+  if (TOKEN) { TOKEN = null; sessionStorage.removeItem("nk_token"); refreshAuthBtn(); return; }
+  const setting = !CONFIGURED;
+  $("pwTitle").textContent = setting ? "Set dashboard password" : "Log in";
+  $("pwInput").value = ""; $("pwCurrent").value = "";
+  $("pwCurrent").style.display = "none";
+  $("pwDialog").returnValue = ""; $("pwDialog")._mode = setting ? "set" : "login";
+  $("pwDialog").showModal(); $("pwInput").focus();
+}
+
+async function pwSubmit() {
+  const mode = $("pwDialog")._mode;
+  const pw = $("pwInput").value;
+  if (mode === "set") {
+    const r = await api("/api/set-password", { method: "POST",
+      body: JSON.stringify({ password: pw }) });
+    if (!r.ok) { alert(r.body.error || "Failed"); return; }
+    CONFIGURED = true;
+  }
+  // Always log in to obtain a token.
+  const r = await api("/api/login", { method: "POST", body: JSON.stringify({ password: pw }) });
+  if (!r.ok) { alert(r.body.error || "Login failed"); return; }
+  TOKEN = r.body.token; sessionStorage.setItem("nk_token", TOKEN);
+  refreshAuthBtn(); $("pwDialog").close();
+}
+
+async function control(target, action, params) {
+  if (!TOKEN) { authClick(); return; }
+  const r = await api("/api/control", { method: "POST",
+    body: JSON.stringify({ token: TOKEN, target, action, params: params || {} }) });
+  if (r.status === 401) { TOKEN = null; sessionStorage.removeItem("nk_token"); refreshAuthBtn(); authClick(); return; }
+  if (!r.ok) { alert(r.body.error || "Action failed"); return; }
+  load();
+}
+
+function rename(pi) {
+  const name = prompt("Rename this device:", pi.name || pi.hostname);
+  if (name) control(pi.ip, "rename", { name });
+}
+function setNtp(pi) {
+  const server = prompt("NTP server for this device (blank to clear / use discovery):", "");
+  if (server !== null) control(pi.ip, "set-ntp", { server });
+}
+
+function qualityChip(t) {
+  const q = (t && t.quality) || "unknown";
+  const label = { good: "Good", marginal: "Marginal", bad: "Poor", unsynced: "Unsynced" }[q] || "Unknown";
+  return `<span class="quality q-${q}"><span class="dot"></span>${label}</span>`;
+}
+
+function card(pi) {
+  const t = pi.timing || {};
+  if (!pi.online) {
+    return `<div class="card offline"><div class="name">${pi.name || pi.ip}</div>
+      <div class="sub">${pi.ip} · offline</div></div>`;
+  }
+  const led = pi.led === "solid" ? "solid" : pi.led === "blink" ? "blink" : "";
+  const cal = pi.calibrator;
+  const rows = [
+    ["Sync", qualityChip(t)],
+    ["Stratum", fmt(t.stratum)],
+    ["Reference", (t.reference || "—") + (t.reference_tier && t.reference_tier !== "NONE" ? ` <span class="badge">${t.reference_tier}</span>` : "")],
+    ["RMS offset", fmtSec(t.rms_offset_s)],
+    ["Root dispersion", fmtSec(t.root_dispersion_s)],
+    ["Frequency", t.freq_ppm != null ? t.freq_ppm.toFixed(2) + " ppm" : "—"],
+    ["Sources", pi.sources ? (pi.sources.count + (pi.sources.diversity_ok === false ? " ⚠" : "")) : "—"],
+  ];
+  if (cal && cal.precision_typical_ms != null)
+    rows.push(["Precision", cal.precision_typical_ms.toFixed(3) + " ms"]);
+
+  return `<div class="card">
+    <div class="led ${led}" title="IRIG-H LED: ${pi.led || "unknown"}"></div>
+    <div class="name" title="Click to rename" onclick='rename(${JSON.stringify(pi)})'>${pi.name || pi.hostname}</div>
+    <div class="sub">${pi.hostname} · ${pi.ip} <span class="badge">${pi.role}</span></div>
+    <table class="fields">${rows.map(([k, v]) => `<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`).join("")}</table>
+    <div class="actions">
+      <button onclick='control("${pi.ip}","restart",{service:"chrony"})'>Restart chrony</button>
+      <button onclick='control("${pi.ip}","restart",{service:"irig-sender"})'>Restart sender</button>
+      <button onclick='setNtp(${JSON.stringify(pi)})'>Set NTP</button>
+      <button onclick='if(confirm("Reboot ${pi.hostname}?"))control("${pi.ip}","reboot")'>Reboot</button>
+      <button class="danger" onclick='if(confirm("Shut down ${pi.hostname}?"))control("${pi.ip}","shutdown")'>Shutdown</button>
+    </div>
+  </div>`;
+}
+
+async function load() {
+  const r = await api("/api/all");
+  const pis = (r.body && r.body.pis) || [];
+  $("count").textContent = pis.length + (pis.length === 1 ? " device" : " devices");
+  $("updated").textContent = "updated " + new Date().toLocaleTimeString();
+  $("grid").innerHTML = pis.length
+    ? pis.map(card).join("")
+    : `<div class="empty">No NeuroKairos devices found on the network yet.</div>`;
+}
+
+async function init() {
+  const r = await api("/api/auth-status");
+  CONFIGURED = !!(r.body && r.body.configured);
+  refreshAuthBtn();
+  await load();
+  setInterval(load, 2000);
+}
+init();
+</script>
+</body>
+</html>

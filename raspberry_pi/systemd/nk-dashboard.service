@@ -1,0 +1,17 @@
+[Unit]
+Description=NeuroKairos status dashboard (web UI)
+Documentation=https://github.com/SjulsonLab/neurokairos
+After=network-online.target nk-status-agent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 /usr/local/sbin/nk_dashboard.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

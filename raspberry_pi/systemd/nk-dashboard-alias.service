@@ -1,0 +1,20 @@
+[Unit]
+Description=NeuroKairos dashboard mDNS alias (neurokairos.local)
+Documentation=https://github.com/SjulsonLab/neurokairos
+After=network-online.target avahi-daemon.service
+Wants=network-online.target
+Requires=avahi-daemon.service
+
+[Service]
+Type=simple
+# Publishes neurokairos.local -> this server's primary IP so the dashboard is
+# reachable at one friendly name. avahi-publish runs in the foreground while the
+# alias is registered.
+ExecStart=/usr/local/sbin/nk_publish_alias.sh neurokairos.local
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

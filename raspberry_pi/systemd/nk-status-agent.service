@@ -1,0 +1,20 @@
+[Unit]
+Description=NeuroKairos status agent
+Documentation=https://github.com/SjulsonLab/neurokairos
+After=network-online.target chrony.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+# Low priority so it can never compete with the RT IRIG-H sender (SCHED_FIFO 80
+# always preempts a normal-priority process).
+Nice=10
+ExecStart=/usr/bin/python3 /usr/local/sbin/nk_status_agent.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
