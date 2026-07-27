@@ -96,6 +96,18 @@ def test_build_status_shape(mod, calib):
 
 # --- role ------------------------------------------------------------------
 
+def test_page_ports(mod):
+    assert mod.page_ports("client") == [8080, 80]   # senders also serve on 80
+    assert mod.page_ports("server") == [8080]        # servers keep 80 for the dashboard
+
+
+def test_build_self_page(mod):
+    html = mod.build_self_page()
+    assert "NeuroKairos" in html
+    assert "/api/status" in html          # the page polls its own status endpoint
+    assert "<!DOCTYPE html>" in html
+
+
 def test_get_role(mod):
     assert mod.get_role("neurokairos-server") == "server"
     assert mod.get_role("neurokairos-sender") == "client"

@@ -22,6 +22,17 @@ Both images contain `irig_sender` running as a systemd service from boot, with `
 
 ### Sender image — first-boot checklist
 
+- **Accessing it (no server needed):** open **`http://neurokairos-sender.local`**
+  (or the Pi's IP) for a read-only status page — sync quality, stratum, reference,
+  offsets, and whether IRIG-H is sending. The page is served at the lowest CPU
+  priority and cannot affect pulse timing. Note the **fleet dashboard** and the
+  **`neurokairos.local`** name live on a **server** image, not on a sender; a
+  sender answers to `neurokairos-sender.local`, not `neurokairos.local`. Raw JSON
+  is also at `http://<ip>:8080/api/status`.
+- **SSH** is off unless you enabled it at flash time (Raspberry Pi Imager's OS
+  customisation, or an empty `ssh` file + `userconf.txt` on the boot partition).
+  Without it there's no shell and no login account — re-flash with SSH enabled if
+  you need one.
 - `systemctl status irig-sender` should report `active (running)`.
 - `chronyc tracking` should sync within ~30 s to the diverse public NTP sources.
 - `chronyd --version` should report **4.8** (built from source; not the distro 4.6).

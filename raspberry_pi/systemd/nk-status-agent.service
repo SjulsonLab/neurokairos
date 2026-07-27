@@ -7,9 +7,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-# Low priority so it can never compete with the RT IRIG-H sender (SCHED_FIFO 80
-# always preempts a normal-priority process).
-Nice=10
+# Lowest possible priority so serving the status page can never compete with the
+# RT IRIG-H sender: SCHED_IDLE runs only on otherwise-idle CPU, and the sender's
+# SCHED_FIFO-80 pulse thread (a separate process) preempts it unconditionally.
+Nice=19
+CPUSchedulingPolicy=idle
 ExecStart=/usr/bin/python3 /usr/local/sbin/nk_status_agent.py
 Restart=always
 RestartSec=10

@@ -24,10 +24,19 @@ import json
 import os
 import socket
 import subprocess
+import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 AGENT_PORT = 8080
+PAGE_PORT = 80   # senders also serve the status page here so bare http://<host>/ works
+
+
+def page_ports(role: str):
+    """Ports this Pi should serve on. Senders add port 80 for a friendly URL;
+    servers keep 80 for the fleet dashboard, so the agent stays on 8080 there."""
+    return [AGENT_PORT, PAGE_PORT] if role == "client" else [AGENT_PORT]
 
 NAME_PATH = "/var/lib/neurokairos/name"
 AUTH_PATH = "/var/lib/neurokairos/agent-auth"
@@ -324,6 +333,71 @@ def handle_set_auth(payload: dict):
 
 
 # ---------------------------------------------------------------------------
+# Self status page (a single-Pi, read-only view for direct/standalone access)
+# ---------------------------------------------------------------------------
+
+_SELF_PAGE = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NeuroKairos</title>
+<style>
+ :root{--good:#16a34a;--marginal:#d97706;--bad:#dc2626;--unsynced:#9ca3af;
+       --ink:#111827;--muted:#6b7280;--line:#e5e7eb}
+ body{margin:0;background:#fff;color:var(--ink);
+      font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+ header{padding:16px 22px;border-bottom:1px solid var(--line);font-weight:650;font-size:18px}
+ .wrap{max-width:520px;margin:22px auto;padding:0 16px}
+ .name{font-size:20px;font-weight:650;margin:0 0 2px}
+ .sub{color:var(--muted);font-size:13px;margin-bottom:14px}
+ .badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:999px;
+        border:1px solid var(--line);color:var(--muted)}
+ table{width:100%;border-collapse:collapse} td{padding:4px 0;font-size:14px}
+ td.k{color:var(--muted)} td.v{text-align:right;font-variant-numeric:tabular-nums}
+ .quality{display:inline-flex;align-items:center;gap:7px;font-weight:600}
+ .dot{width:9px;height:9px;border-radius:50%;background:var(--unsynced)}
+ .q-good{color:var(--good)}.q-good .dot{background:var(--good)}
+ .q-marginal{color:var(--marginal)}.q-marginal .dot{background:var(--marginal)}
+ .q-bad{color:var(--bad)}.q-bad .dot{background:var(--bad)}
+ .q-unsynced{color:var(--unsynced)}.q-unsynced .dot{background:var(--unsynced)}
+ .updated{color:var(--muted);font-size:12px;margin-top:12px}
+</style></head><body>
+<header>NeuroKairos</header>
+<div class="wrap" id="wrap"><p class="sub">Loading…</p></div>
+<script>
+function fmtSec(s){if(s==null)return "—";const us=Math.abs(s)*1e6;
+ return us<1000?us.toFixed(1)+" µs":(us/1000).toFixed(3)+" ms";}
+function render(d){
+ const t=d.timing||{},s=d.services||{},q=t.quality||"unknown";
+ const ql={good:"Good",marginal:"Marginal",bad:"Poor",unsynced:"Unsynced"}[q]||"Unknown";
+ const rows=[
+  ["Sync",`<span class="quality q-${q}"><span class="dot"></span>${ql}</span>`],
+  ["Stratum",t.stratum??"—"],
+  ["Reference",(t.reference||"—")+(t.reference_tier&&t.reference_tier!=="NONE"?` <span class="badge">${t.reference_tier}</span>`:"")],
+  ["RMS offset",fmtSec(t.rms_offset_s)],
+  ["Root dispersion",fmtSec(t.root_dispersion_s)],
+  ["Frequency",t.freq_ppm!=null?t.freq_ppm.toFixed(2)+" ppm":"—"],
+  ["IRIG-H sending",s["irig-sender"]?"active":"stopped"],
+  ["chrony",s["chrony"]?"active":"stopped"],
+ ];
+ if(d.calibrator&&d.calibrator.precision_typical_ms!=null)
+  rows.push(["Precision",d.calibrator.precision_typical_ms.toFixed(3)+" ms"]);
+ document.getElementById("wrap").innerHTML=
+  `<div class="name">${d.name||d.hostname||""}</div>`+
+  `<div class="sub">${d.hostname||""} · ${d.ip||""} <span class="badge">${d.role||""}</span></div>`+
+  `<table>${rows.map(([k,v])=>`<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`).join("")}</table>`+
+  `<div class="updated">updated ${new Date().toLocaleTimeString()}</div>`;
+}
+async function load(){try{const r=await fetch("/api/status");render(await r.json());}catch(e){}}
+load();setInterval(load,2000);
+</script></body></html>
+"""
+
+
+def build_self_page() -> str:
+    return _SELF_PAGE
+
+
+# ---------------------------------------------------------------------------
 # HTTP server
 # ---------------------------------------------------------------------------
 
@@ -347,9 +421,19 @@ def make_server(host: str, port: int) -> ThreadingHTTPServer:
             except json.JSONDecodeError:
                 return {}
 
+        def _html(self, body):
+            enc = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(enc)))
+            self.end_headers()
+            self.wfile.write(enc)
+
         def do_GET(self):  # noqa: N802
             path = urlparse(self.path).path
-            if path == "/health":
+            if path in ("/", "/index.html"):
+                self._html(build_self_page())
+            elif path == "/health":
                 self._json({"ok": True})
             elif path == "/api/status":
                 self._json(gather_status())
@@ -379,7 +463,21 @@ def main(argv=None):
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=AGENT_PORT)
     args = p.parse_args(argv)
-    make_server(args.host, args.port).serve_forever()
+
+    # Serve on 8080 always; senders also serve the status page on port 80 so a
+    # bare http://<host>/ works. A failed bind (e.g. 80 in use) is non-fatal.
+    ports = sorted(set(page_ports(get_role(socket.gethostname()))) | {args.port})
+    servers = []
+    for port in ports:
+        try:
+            servers.append(make_server(args.host, port))
+        except OSError as exc:
+            print(f"nk_status_agent: could not bind port {port}: {exc}", file=sys.stderr)
+    if not servers:
+        raise SystemExit("nk_status_agent: no ports bound")
+    for srv in servers[1:]:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    servers[0].serve_forever()
 
 
 if __name__ == "__main__":
