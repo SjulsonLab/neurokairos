@@ -1,0 +1,22 @@
+[Unit]
+Description=NeuroKairos sender mDNS alias (neurokairos.local)
+Documentation=https://github.com/SjulsonLab/neurokairos
+After=network-online.target avahi-daemon.service
+Wants=network-online.target
+Requires=avahi-daemon.service
+
+[Service]
+Type=simple
+# Publishes neurokairos.local -> this sender's IP so a single-sender setup has a
+# memorable URL. Lowest priority so the avahi publisher can never perturb the RT
+# IRIG-H busy-wait (the sender's SCHED_FIFO-80 thread preempts it regardless).
+ExecStart=/usr/local/sbin/nk_publish_alias.sh neurokairos.local
+Restart=always
+RestartSec=10
+CPUSchedulingPolicy=idle
+Nice=19
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,2 @@
+# CI/local-build stages nk_publish_alias.sh + nk-sender-alias.service here
+# from raspberry_pi/ (source of truth).

@@ -1,0 +1,12 @@
+[Unit]
+Description=NeuroKairos console IP/MAC banner (/etc/issue)
+Documentation=https://github.com/SjulsonLab/neurokairos
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/nk_console_issue.sh
+# Lowest priority — never competes with the RT IRIG-H sender.
+CPUSchedulingPolicy=idle
+Nice=19

@@ -12,27 +12,31 @@ Both images contain `irig_sender` running as a systemd service from boot, with `
 ## Download → flash → boot
 
 1. Grab the latest `neurokairos-sender-*.img.xz` or `neurokairos-server-*.img.xz` from the [Releases page]. Decompress with `xz -d` or let Raspberry Pi Imager handle it.
-2. Flash to a microSD with [Raspberry Pi Imager] or `dd`.
-3. Before unmounting the FAT boot partition (`bootfs`), drop two files on it:
-   - **`ssh`** — empty file. Enables SSH on first boot.
-   - **`userconf.txt`** — one line, `username:hashed-password`. Generate the hash with `openssl passwd -6` or use Raspberry Pi Imager's "Edit custom OS settings" dialog, which writes this file for you.
+2. Flash to a microSD with [Raspberry Pi Imager] or `dd`. **Use a high-endurance / industrial (A2) card** (e.g. SanDisk High Endurance or Max Endurance) — a timing appliance writes logs continuously and cheap cards wear out and corrupt.
+3. Eject, insert into the Pi, power on. **No `ssh`/`userconf.txt` files are needed** — the image ships ready to use.
+4. First access: SSH (or console) as **`neurokairos`** / **`neurokairos`**; you'll be prompted to set a new password. Or just open **`http://neurokairos.local`** in a browser. The HDMI console shows the Pi's IP + MAC before login.
 
-   (Skipping `userconf.txt` causes first boot to hang on the user-create prompt — this is upstream Pi OS behavior.)
-4. Eject, insert into the Pi, power on.
+> Do NOT use Raspberry Pi Imager's "Edit custom OS settings" to preset a different user — the appliance's first-run behavior (forced password change, `neurokairos.local`) assumes the built-in `neurokairos` user.
 
 ### Sender image — first-boot checklist
 
-- **Accessing it (no server needed):** open **`http://neurokairos-sender.local`**
-  (or the Pi's IP) for a read-only status page — sync quality, stratum, reference,
-  offsets, and whether IRIG-H is sending. The page is served at the lowest CPU
-  priority and cannot affect pulse timing. Note the **fleet dashboard** and the
-  **`neurokairos.local`** name live on a **server** image, not on a sender; a
-  sender answers to `neurokairos-sender.local`, not `neurokairos.local`. Raw JSON
-  is also at `http://<ip>:8080/api/status`.
-- **SSH** is off unless you enabled it at flash time (Raspberry Pi Imager's OS
-  customisation, or an empty `ssh` file + `userconf.txt` on the boot partition).
-  Without it there's no shell and no login account — re-flash with SSH enabled if
-  you need one.
+- **Web status (no server needed):** open **`http://neurokairos.local`** (or the
+  Pi's IP) for a status page — sync quality, stratum, reference, offsets, whether
+  IRIG-H is sending, plus a **Diagnostics** section showing each service's state
+  and recent logs (so you can see *why* something failed without SSH). Served at
+  the lowest CPU priority; cannot affect pulse timing. Each unit is also reachable
+  at its own `neurokairos-sender.local`. Raw JSON: `http://<ip>:8080/api/status`.
+  - (On a LAN that also has a NeuroKairos **server**, the server owns
+    `neurokairos.local` and hosts the multi-Pi fleet dashboard; a lone sender
+    claims `neurokairos.local` for itself.)
+- **SSH (on by default):** log in as **`neurokairos`** / password **`neurokairos`**
+  — you'll be **required to set a new password** on first login. Unique SSH host
+  keys are generated per device on first boot.
+- **HDMI/console:** before login, the screen shows the Pi's IP + MAC (or "no IP
+  assigned yet"), so you can find it on the network without a scanner.
+- **Making a golden image:** `sudo nk_sanitize.sh` wipes machine-specific
+  identity (host keys, machine-id, saved name/password) and powers off, so the SD
+  card can be re-imaged cleanly.
 - `systemctl status irig-sender` should report `active (running)`.
 - `chronyc tracking` should sync within ~30 s to the diverse public NTP sources.
 - `chronyd --version` should report **4.8** (built from source; not the distro 4.6).
@@ -116,6 +120,20 @@ agent=/tmp/pi-gen/stage-neurokairos-common/04-install-status-agent/files
 install -m 644 raspberry_pi/scripts/nk_status_agent.py "$agent/"
 install -m 644 raspberry_pi/systemd/nk-status-agent.service "$agent/"
 
+# Both images: stage the appliance basics (console banner, sanitize, forced pw)
+app=/tmp/pi-gen/stage-neurokairos-common/05-appliance/files
+install -m 644 raspberry_pi/scripts/nk_console_issue.sh "$app/"
+install -m 644 raspberry_pi/scripts/nk_sanitize.sh "$app/"
+install -m 644 raspberry_pi/systemd/nk-console-issue.service "$app/"
+install -m 644 raspberry_pi/systemd/nk-console-issue.timer "$app/"
+
+# Sender variant only: stage the neurokairos.local alias publisher
+appc=/tmp/pi-gen/stage-neurokairos-client/02-appliance/files
+if [ -d "$appc" ]; then
+  install -m 644 raspberry_pi/scripts/nk_publish_alias.sh "$appc/"
+  install -m 644 raspberry_pi/systemd/nk-sender-alias.service "$appc/"
+fi
+
 # Server variant only: stage the dashboard (web UI + alias publisher)
 dash=/tmp/pi-gen/stage-neurokairos-server/01-install-dashboard/files
 if [ -d "$dash" ]; then
@@ -143,8 +161,8 @@ To build the other variant cleanly, run `sudo ./build-docker.sh -c clean` (or wi
 
 ## How the build is wired
 
-- `image/stage-neurokairos-common/` — always runs. Installs the natively-compiled `irig_sender` binary + systemd unit (`00-install-sender`), the shared packages incl. distro chrony + SSH-banner motd (`01-system-tweaks`), **chrony 4.8 built from source over the distro package** (`02-build-chrony`), the NTP calibrator logging daemon + unit (`03-install-calibrator`), and the **status agent + `avahi-daemon`/`avahi-utils`** that reports timing/LED status and advertises `_neurokairos-status._tcp` for the dashboard (`04-install-status-agent`).
-- `image/stage-neurokairos-client/` — exports `*-sender.img.xz`. Installs the NTP-client `chrony.conf` (with a `sourcedir`), sets hostname `neurokairos-sender`, and installs the mDNS **discovery** daemon (`nk_discover_ntp.py` + a systemd timer) plus `avahi-daemon`/`avahi-utils` that finds LAN NeuroKairos servers and feeds them to chrony at runtime.
+- `image/stage-neurokairos-common/` — always runs. Installs the natively-compiled `irig_sender` binary + systemd unit (`00-install-sender`), the shared packages incl. distro chrony + SSH-banner motd (`01-system-tweaks`), **chrony 4.8 built from source over the distro package** (`02-build-chrony`), the NTP calibrator logging daemon + unit (`03-install-calibrator`), the **status agent + `avahi-daemon`/`avahi-utils`/`libnss-mdns`** that reports timing status (self-page + `_neurokairos-status._tcp`) (`04-install-status-agent`), and the **appliance basics** — forced first-login password change, the HDMI console IP/MAC banner, and the `nk_sanitize.sh` golden-image tool (`05-appliance`). It also writes `/etc/default/chrony` (empty `DAEMON_OPTS`) so the source-built, seccomp-less chronyd starts.
+- `image/stage-neurokairos-client/` — exports `*-sender.img.xz`. Installs the NTP-client `chrony.conf` (with a `sourcedir`), sets hostname `neurokairos-sender`, installs the mDNS **discovery** daemon (`nk_discover_ntp.py` + timer) that finds LAN NeuroKairos servers and feeds them to chrony at runtime (`01-install-discovery`), and publishes the **`neurokairos.local`** alias for the single-sender case at lowest priority (`02-appliance`).
 - `image/stage-neurokairos-server/` — exports `*-server.img.xz`. Installs gpsd + pps-tools, the stratum-1 `chrony.conf`, patches `/boot/firmware/config.txt` for `pps-gpio` overlay + UART, removes the serial console from `cmdline.txt`, sets hostname `neurokairos-server`, **advertises** itself over mDNS (`_neurokairos-ntp._udp`) so sender Pis discover it, and hosts the **status dashboard** (`01-install-dashboard`: web UI on port 80 + the `neurokairos.local` mDNS alias).
 
 `raspberry_pi/sender/irig_sender.c` and `raspberry_pi/systemd/irig-sender.service` are the single source of truth. The CI workflow native-compiles the binary on a `ubuntu-24.04-arm` runner and drops it (plus the systemd unit) into the common stage's `files/` directory before pi-gen runs; nothing under `image/stage-neurokairos-common/00-install-sender/files/` is committed except the `.gitkeep` note.

@@ -1,0 +1,2 @@
+# CI/local-build stages nk_console_issue.sh, nk_sanitize.sh, and the
+# nk-console-issue .service/.timer here from raspberry_pi/ (source of truth).

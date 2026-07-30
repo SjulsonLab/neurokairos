@@ -13,14 +13,17 @@ KEYBOARD_KEYMAP='us'
 KEYBOARD_LAYOUT='English (US)'
 TIMEZONE_DEFAULT='Etc/UTC'
 
-# No baked-in user/password. First boot creates a user from `userconf.txt`
-# on the FAT boot partition (standard Pi OS behavior).
-DISABLE_FIRST_BOOT_USER_RENAME=0
-FIRST_USER_NAME=''
-FIRST_USER_PASS=''
+# Appliance defaults: ship a known user so the device is reachable out of the
+# box. The password is expired at first boot (see 05-appliance) so the user MUST
+# set a new one on first login. This is the documented default; change on first use.
+DISABLE_FIRST_BOOT_USER_RENAME=1
+FIRST_USER_NAME='neurokairos'
+FIRST_USER_PASS='neurokairos'
 
-# SSH is gated on the standard `ssh` touchfile on the boot partition.
-ENABLE_SSH=0
+# SSH on by default (appliance). Host keys are regenerated on first boot; the
+# image ships none. Combined with the forced password change, this is the
+# out-of-the-box access path.
+ENABLE_SSH=1
 
 # Stages: the standard pi-gen lite trio plus our common layer and the variant
 # selected by the caller. The variant is the only place EXPORT_IMAGE appears

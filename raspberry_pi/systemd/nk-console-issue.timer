@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh the NeuroKairos console IP/MAC banner
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=60s
+Unit=nk-console-issue.service
+
+[Install]
+WantedBy=timers.target
