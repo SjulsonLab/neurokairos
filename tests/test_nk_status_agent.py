@@ -105,7 +105,21 @@ def test_build_self_page(mod):
     html = mod.build_self_page()
     assert "NeuroKairos" in html
     assert "/api/status" in html          # the page polls its own status endpoint
+    assert "/api/diagnostics" in html     # ...and the diagnostics endpoint
+    assert "Diagnostics" in html
     assert "<!DOCTYPE html>" in html
+
+
+def test_gather_diagnostics(mod, monkeypatch):
+    monkeypatch.setattr(mod, "systemctl_is_active",
+                        lambda u: u == "chrony")   # chrony up, irig-sender down
+    monkeypatch.setattr(mod, "run_journal", lambda u, lines=50: f"log for {u}")
+    d = mod.gather_diagnostics()
+    by = {u["unit"]: u for u in d["units"]}
+    assert set(by) == {"chrony", "irig-sender"}
+    assert by["chrony"]["active"] is True
+    assert by["irig-sender"]["active"] is False
+    assert by["irig-sender"]["log"] == "log for irig-sender"
 
 
 def test_get_role(mod):

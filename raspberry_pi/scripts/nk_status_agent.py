@@ -175,6 +175,32 @@ def read_calibrator_metrics(path: str = None):
 
 
 # ---------------------------------------------------------------------------
+# Diagnostics — service state + recent logs, so failures are visible in-browser
+# ---------------------------------------------------------------------------
+
+DIAG_UNITS = ("chrony", "irig-sender")
+
+
+def run_journal(unit: str, lines: int = 50) -> str:
+    """Recent journal lines for a unit (best-effort; agent runs as root)."""
+    try:
+        r = subprocess.run(
+            ["journalctl", "-u", unit, "--no-pager", "-n", str(lines), "-o", "short-iso"],
+            capture_output=True, text=True, timeout=8)
+        return (r.stdout.strip() or r.stderr.strip()
+                or f"(no journal entries for {unit})")
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"(journal unavailable: {exc})"
+
+
+def gather_diagnostics(units=DIAG_UNITS) -> dict:
+    return {"units": [
+        {"unit": u, "active": systemctl_is_active(u), "log": run_journal(u)}
+        for u in units
+    ]}
+
+
+# ---------------------------------------------------------------------------
 # Full gather (I/O) — glues parsing + files together
 # ---------------------------------------------------------------------------
 
@@ -360,9 +386,18 @@ _SELF_PAGE = """<!DOCTYPE html>
  .q-bad{color:var(--bad)}.q-bad .dot{background:var(--bad)}
  .q-unsynced{color:var(--unsynced)}.q-unsynced .dot{background:var(--unsynced)}
  .updated{color:var(--muted);font-size:12px;margin-top:12px}
+ h3{font-size:15px;margin:26px 0 8px;border-top:1px solid var(--line);padding-top:16px}
+ .unit{font-weight:600;margin:10px 0 4px}
+ .u-active{color:var(--good)} .u-dead{color:var(--bad)}
+ pre.log{white-space:pre-wrap;background:#f9fafb;border:1px solid var(--line);
+         border-radius:6px;padding:8px 10px;font:11.5px/1.45 ui-monospace,Menlo,monospace;
+         max-height:240px;overflow:auto;margin:0}
 </style></head><body>
 <header>NeuroKairos</header>
-<div class="wrap" id="wrap"><p class="sub">Loading…</p></div>
+<div class="wrap">
+ <div id="card"><p class="sub">Loading…</p></div>
+ <h3>Diagnostics</h3><div id="diag"><p class="sub">Loading…</p></div>
+</div>
 <script>
 function fmtSec(s){if(s==null)return "—";const us=Math.abs(s)*1e6;
  return us<1000?us.toFixed(1)+" µs":(us/1000).toFixed(3)+" ms";}
@@ -381,14 +416,22 @@ function render(d){
  ];
  if(d.calibrator&&d.calibrator.precision_typical_ms!=null)
   rows.push(["Precision",d.calibrator.precision_typical_ms.toFixed(3)+" ms"]);
- document.getElementById("wrap").innerHTML=
+ document.getElementById("card").innerHTML=
   `<div class="name">${d.name||d.hostname||""}</div>`+
   `<div class="sub">${d.hostname||""} · ${d.ip||""} <span class="badge">${d.role||""}</span></div>`+
   `<table>${rows.map(([k,v])=>`<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`).join("")}</table>`+
   `<div class="updated">updated ${new Date().toLocaleTimeString()}</div>`;
 }
+function esc(s){return (s||"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function renderDiag(d){
+ document.getElementById("diag").innerHTML=(d.units||[]).map(u=>
+  `<div class="unit">${u.unit}: <span class="${u.active?'u-active':'u-dead'}">${u.active?'active':'stopped'}</span></div>`+
+  `<pre class="log">${esc(u.log)}</pre>`).join("");
+}
 async function load(){try{const r=await fetch("/api/status");render(await r.json());}catch(e){}}
+async function loadDiag(){try{const r=await fetch("/api/diagnostics");renderDiag(await r.json());}catch(e){}}
 load();setInterval(load,2000);
+loadDiag();setInterval(loadDiag,10000);
 </script></body></html>
 """
 
@@ -437,6 +480,8 @@ def make_server(host: str, port: int) -> ThreadingHTTPServer:
                 self._json({"ok": True})
             elif path == "/api/status":
                 self._json(gather_status())
+            elif path == "/api/diagnostics":
+                self._json(gather_diagnostics())
             else:
                 self._json({"error": "not found"}, 404)
 
