@@ -70,3 +70,14 @@ apt-get clean
 # apt-get update and rely on this package index. pi-gen clears the lists during
 # export, so leaving them costs nothing in the final image.
 EOF
+
+# Our source-built chronyd is compiled WITHOUT libseccomp (see note above), but
+# the distro chrony.service launches `chronyd $DAEMON_OPTS` with the seccomp
+# filter flag (-F) from /etc/default/chrony — which makes a no-seccomp chronyd
+# exit at startup. Clear DAEMON_OPTS so chronyd starts. (chronyd still reads
+# /etc/chrony/chrony.conf by default.)
+cat > "${ROOTFS_DIR}/etc/default/chrony" <<'DEFAULT'
+# NeuroKairos: chronyd is built from source without seccomp support, so the
+# distro default "-F" seccomp flag is removed here (it would prevent startup).
+DAEMON_OPTS=""
+DEFAULT

@@ -1,8 +1,9 @@
 [Unit]
 Description=IRIG-H Timecode Sender
-# Ensure chrony is running before we start polling it
-After=multi-user.target chronyd.service
-Wants=chronyd.service
+# Ensure chrony is running before we start polling it (unit is chrony.service on
+# Debian/RPi OS; chronyd.service is only an alias)
+After=multi-user.target chrony.service
+Wants=chrony.service
 
 [Service]
 Type=simple
