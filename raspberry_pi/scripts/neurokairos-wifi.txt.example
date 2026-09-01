@@ -1,0 +1,27 @@
+# NeuroKairos headless Wi-Fi setup
+#
+# To join a Wi-Fi network without a monitor or the setup hotspot:
+#   1. Flash the sender image and, BEFORE first boot, open the small "bootfs"
+#      (a.k.a. "boot" / "system-boot") partition that appears on your computer.
+#   2. Copy this file there and rename it to exactly:   neurokairos-wifi.txt
+#   3. Fill in the three values below, save, eject, and boot the Pi.
+#
+# On first boot the sender sets the Wi-Fi regulatory country (required — the
+# radio stays blocked until it is set), joins the network, then deletes this
+# file's copy from the card (renamed to neurokairos-wifi.txt.applied) so your
+# password isn't left sitting on the FAT partition.
+#
+# After it connects, reach the sender at http://neurokairos-sender.local
+#
+# If you don't provide this file and there's no ethernet, the sender instead
+# broadcasts a "NeuroKairos-Setup" Wi-Fi network you can join from a phone/laptop
+# and configure at http://10.42.0.1
+
+# Two-letter Wi-Fi country code (ISO 3166-1). Examples: US, GB, DE, JP, AU.
+country=US
+
+# Your Wi-Fi network name (case-sensitive).
+ssid=YourNetworkName
+
+# Your Wi-Fi password. Leave blank for an open network.
+password=YourWiFiPassword

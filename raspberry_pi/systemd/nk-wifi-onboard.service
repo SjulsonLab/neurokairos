@@ -1,0 +1,23 @@
+[Unit]
+Description=NeuroKairos headless Wi-Fi onboarding
+Documentation=https://github.com/SjulsonLab/neurokairos
+# Run after NetworkManager so ethernet / saved Wi-Fi have had a chance to
+# autoconnect before we decide whether onboarding is needed.
+After=NetworkManager.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+RemainAfterExit=yes
+# One-time decision at boot: online -> nothing; boot-file -> join; else start the
+# setup hotspot. Lowest priority so it can never perturb the RT IRIG-H sender
+# (its SCHED_FIFO-80 pulse thread preempts this regardless).
+Nice=19
+CPUSchedulingPolicy=idle
+ExecStart=/usr/bin/python3 /usr/local/sbin/nk_wifi_onboard.py
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

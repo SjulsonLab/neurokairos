@@ -16,7 +16,31 @@ Both images contain `irig_sender` running as a systemd service from boot, with `
 3. Eject, insert into the Pi, power on. **No `ssh`/`userconf.txt` files are needed** — the image ships ready to use.
 4. First access: SSH (or console) as **`neurokairos`** / **`neurokairos`**; you'll be prompted to set a new password. Or just open **`http://neurokairos.local`** in a browser. The HDMI console shows the Pi's IP + MAC before login.
 
-> Do NOT use Raspberry Pi Imager's "Edit custom OS settings" to preset a different user — the appliance's first-run behavior (forced password change, `neurokairos.local`) assumes the built-in `neurokairos` user.
+> Do NOT use Raspberry Pi Imager's "Edit custom OS settings" to preset a different user — the appliance's first-run behavior (forced password change, `neurokairos.local`) assumes the built-in `neurokairos` user. (Imager's Wi-Fi field is also broken on trixie; use one of the three options below instead.)
+
+### Getting the sender onto your network (headless Wi-Fi)
+
+The sender picks a network automatically, in this order — you only need **one**:
+
+1. **Ethernet (simplest).** Plug in a cable; nothing to configure. Ethernet
+   always wins, and a Pi already online never enters Wi-Fi setup.
+2. **Wi-Fi config file (headless, no monitor).** Before first boot, on the small
+   **`bootfs`** partition that appears when you mount the card, copy
+   `neurokairos-wifi.txt.example` to **`neurokairos-wifi.txt`** and fill in
+   `country=`, `ssid=`, `password=`. On boot the sender sets the Wi-Fi
+   **regulatory country** (required — the radio is blocked until it's set),
+   joins, and renames the file to `…​.applied` so your password isn't left on the
+   card. (You can also drop this file onto the boot partition of an
+   already-running card.)
+3. **Setup hotspot (no cable, no file).** If there's no ethernet and no config
+   file, the sender broadcasts a Wi-Fi network **`NeuroKairos-Setup`** (password
+   `neurokairos`). Join it from a phone/laptop, open **`http://10.42.0.1`**, pick
+   your network + enter the password and country, and submit. The hotspot then
+   disappears as the sender joins your Wi-Fi — reconnect your device to your
+   normal network and find the sender at `http://neurokairos-sender.local`. Once
+   configured this way it won't re-open the hotspot on its own.
+
+> Reaching it afterward: a lone sender is always at **`http://neurokairos-sender.local`**. It also tries to claim the friendlier **`neurokairos.local`**, but if that name doesn't resolve (mDNS caching, or a server on the LAN owning it), use `neurokairos-sender.local` or the Pi's IP.
 
 ### Sender image — first-boot checklist
 
@@ -134,6 +158,17 @@ if [ -d "$appc" ]; then
   install -m 644 raspberry_pi/systemd/nk-sender-alias.service "$appc/"
 fi
 
+# Sender variant only: stage headless Wi-Fi onboarding (decision oneshot +
+# setup-hotspot portal + boot-partition example)
+wifi=/tmp/pi-gen/stage-neurokairos-client/03-wifi-onboard/files
+if [ -d "$wifi" ]; then
+  install -m 644 raspberry_pi/scripts/nk_wifi_onboard.py "$wifi/"
+  install -m 644 raspberry_pi/scripts/nk_wifi_portal.py "$wifi/"
+  install -m 644 raspberry_pi/scripts/neurokairos-wifi.txt.example "$wifi/"
+  install -m 644 raspberry_pi/systemd/nk-wifi-onboard.service "$wifi/"
+  install -m 644 raspberry_pi/systemd/nk-wifi-portal.service "$wifi/"
+fi
+
 # Server variant only: stage the dashboard (web UI + alias publisher)
 dash=/tmp/pi-gen/stage-neurokairos-server/01-install-dashboard/files
 if [ -d "$dash" ]; then
@@ -162,7 +197,7 @@ To build the other variant cleanly, run `sudo ./build-docker.sh -c clean` (or wi
 ## How the build is wired
 
 - `image/stage-neurokairos-common/` — always runs. Installs the natively-compiled `irig_sender` binary + systemd unit (`00-install-sender`), the shared packages incl. distro chrony + SSH-banner motd (`01-system-tweaks`), **chrony 4.8 built from source over the distro package** (`02-build-chrony`), the NTP calibrator logging daemon + unit (`03-install-calibrator`), the **status agent + `avahi-daemon`/`avahi-utils`/`libnss-mdns`** that reports timing status (self-page + `_neurokairos-status._tcp`) (`04-install-status-agent`), and the **appliance basics** — forced first-login password change, the HDMI console IP/MAC banner, and the `nk_sanitize.sh` golden-image tool (`05-appliance`). It also writes `/etc/default/chrony` (empty `DAEMON_OPTS`) so the source-built, seccomp-less chronyd starts.
-- `image/stage-neurokairos-client/` — exports `*-sender.img.xz`. Installs the NTP-client `chrony.conf` (with a `sourcedir`), sets hostname `neurokairos-sender`, installs the mDNS **discovery** daemon (`nk_discover_ntp.py` + timer) that finds LAN NeuroKairos servers and feeds them to chrony at runtime (`01-install-discovery`), and publishes the **`neurokairos.local`** alias for the single-sender case at lowest priority (`02-appliance`).
+- `image/stage-neurokairos-client/` — exports `*-sender.img.xz`. Installs the NTP-client `chrony.conf` (with a `sourcedir`), sets hostname `neurokairos-sender`, installs the mDNS **discovery** daemon (`nk_discover_ntp.py` + timer) that finds LAN NeuroKairos servers and feeds them to chrony at runtime (`01-install-discovery`), and publishes the **`neurokairos.local`** alias for the single-sender case at lowest priority (`02-appliance`), and installs **headless Wi-Fi onboarding** — a boot oneshot that joins via `/boot/firmware/neurokairos-wifi.txt` or falls back to the `NeuroKairos-Setup` captive hotspot, setting the Wi-Fi regulatory country either way (`03-wifi-onboard`).
 - `image/stage-neurokairos-server/` — exports `*-server.img.xz`. Installs gpsd + pps-tools, the stratum-1 `chrony.conf`, patches `/boot/firmware/config.txt` for `pps-gpio` overlay + UART, removes the serial console from `cmdline.txt`, sets hostname `neurokairos-server`, **advertises** itself over mDNS (`_neurokairos-ntp._udp`) so sender Pis discover it, and hosts the **status dashboard** (`01-install-dashboard`: web UI on port 80 + the `neurokairos.local` mDNS alias).
 
 `raspberry_pi/sender/irig_sender.c` and `raspberry_pi/systemd/irig-sender.service` are the single source of truth. The CI workflow native-compiles the binary on a `ubuntu-24.04-arm` runner and drops it (plus the systemd unit) into the common stage's `files/` directory before pi-gen runs; nothing under `image/stage-neurokairos-common/00-install-sender/files/` is committed except the `.gitkeep` note.

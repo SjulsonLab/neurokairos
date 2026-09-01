@@ -124,6 +124,17 @@ jobs:
             install -m 644 raspberry_pi/systemd/nk-sender-alias.service "$appc/"
           fi
 
+          # Sender-only: stage headless Wi-Fi onboarding (decision oneshot +
+          # setup-hotspot portal + boot-partition example).
+          wifi=pi-gen/${{ matrix.stage_dir }}/03-wifi-onboard/files
+          if [ -d "$wifi" ]; then
+            install -m 644 raspberry_pi/scripts/nk_wifi_onboard.py "$wifi/"
+            install -m 644 raspberry_pi/scripts/nk_wifi_portal.py "$wifi/"
+            install -m 644 raspberry_pi/scripts/neurokairos-wifi.txt.example "$wifi/"
+            install -m 644 raspberry_pi/systemd/nk-wifi-onboard.service "$wifi/"
+            install -m 644 raspberry_pi/systemd/nk-wifi-portal.service "$wifi/"
+          fi
+
           # Stage the dashboard (server variant only) into its install step.
           dash=pi-gen/${{ matrix.stage_dir }}/01-install-dashboard/files
           if [ -d "$dash" ]; then

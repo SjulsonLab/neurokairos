@@ -1,0 +1,20 @@
+[Unit]
+Description=NeuroKairos Wi-Fi setup hotspot / captive portal
+Documentation=https://github.com/SjulsonLab/neurokairos
+# NOT enabled at boot — started on demand by nk-wifi-onboard.service only when a
+# fresh unit has no ethernet and no Wi-Fi config. Needs NetworkManager for the
+# built-in hotspot (which also serves DHCP on 10.42.0.1).
+After=NetworkManager.service
+Requires=NetworkManager.service
+
+[Service]
+Type=simple
+User=root
+# Lowest priority like every other helper; the RT IRIG-H sender preempts it.
+Nice=19
+CPUSchedulingPolicy=idle
+ExecStart=/usr/bin/python3 /usr/local/sbin/nk_wifi_portal.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
