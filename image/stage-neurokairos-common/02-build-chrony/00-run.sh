@@ -50,7 +50,11 @@ cd "chrony-${CHRONY_VERSION}"
 # chrony ships a hand-written configure (not autoconf); these flags match the
 # Debian layout so we overwrite the packaged binaries in place. Crypto uses
 # nettle (auto-detected); gnutls/seccomp are intentionally absent (see note).
-./configure --prefix=/usr --sysconfdir=/etc --localstatedir=/var --with-user=_chrony
+# --sysconfdir MUST be /etc/chrony (not /etc): chronyd's compiled-in default
+# config path is $sysconfdir/chrony.conf, and Debian/RPi OS ships the config at
+# /etc/chrony/chrony.conf. Using /etc made chronyd look for /etc/chrony.conf and
+# fail to start ("Could not open /etc/chrony.conf").
+./configure --prefix=/usr --sysconfdir=/etc/chrony --localstatedir=/var --with-user=_chrony
 make
 make install
 
