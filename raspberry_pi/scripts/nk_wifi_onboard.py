@@ -83,6 +83,10 @@ def networked() -> bool:
 def set_country(cc: str) -> None:
     if not cc:
         return
+    # do_wifi_country persists the country and also unblocks the radio; iw is a
+    # belt-and-suspenders in case raspi-config is unavailable. Give the kernel a
+    # moment to apply the new regulatory domain before we try to scan/associate —
+    # associating before the regdomain is live is what silently failed on-device.
     for cmd in (["raspi-config", "nonint", "do_wifi_country", cc], ["iw", "reg", "set", cc]):
         try:
             _run(cmd, timeout=15)
@@ -93,16 +97,31 @@ def set_country(cc: str) -> None:
             _run(cmd, timeout=10)
         except (OSError, subprocess.SubprocessError):
             pass
+    time.sleep(3)
+
+
+def wifi_rescan() -> None:
+    # A fresh scan is needed after unblocking the radio, or `wifi connect` fails
+    # with "No network with SSID found" because nothing is in the scan cache yet.
+    try:
+        _run(["nmcli", "device", "wifi", "rescan"], timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    time.sleep(4)
 
 
 def wifi_connect(ssid: str, password: str) -> bool:
-    args = ["nmcli", "device", "wifi", "connect", ssid]
+    args = ["nmcli", "--wait", "30", "device", "wifi", "connect", ssid]
     if password:
         args += ["password", password]
     try:
-        return _run(args, timeout=45).returncode == 0
-    except (OSError, subprocess.SubprocessError):
+        r = _run(args, timeout=45)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log(f"wifi connect error: {exc}")
         return False
+    if r.returncode != 0:
+        log(f"wifi connect failed: {(r.stderr or r.stdout or '').strip()}")
+    return r.returncode == 0
 
 
 def wait_online(seconds=25):
@@ -132,8 +151,13 @@ def provision_from_file(path=BOOT_CFG) -> bool:
         return False
     set_country(cfg.get("country", ""))
     log(f"connecting to '{cfg['ssid']}'")
-    wifi_connect(cfg["ssid"], cfg.get("password", ""))
-    time.sleep(5)
+    # Retry: right after the radio comes up the first scan/associate can miss.
+    for attempt in range(1, 4):
+        wifi_rescan()
+        if wifi_connect(cfg["ssid"], cfg.get("password", "")):
+            break
+        log(f"attempt {attempt} failed; retrying")
+    time.sleep(3)
     if networked():
         try:
             os.replace(path, path + ".applied")   # keep the PSK off the FAT card

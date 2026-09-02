@@ -14,6 +14,7 @@ hotspot — the page says so. Pure-stdlib http.server (mirrors nk_status_agent.p
 from __future__ import annotations
 
 import html
+import os
 import subprocess
 import threading
 import time
@@ -92,6 +93,19 @@ connects, this hotspot disappears and the device joins your Wi-Fi.</p>
 # I/O
 # ---------------------------------------------------------------------------
 
+def networked() -> bool:
+    """True once we've joined a real network (any non-loopback dev 'connected')."""
+    try:
+        r = _run(["nmcli", "-t", "-f", "DEVICE,STATE", "device", "status"], timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    for line in r.stdout.splitlines():
+        dev, _, state = line.partition(":")
+        if dev and dev != "lo" and state.strip() == "connected":
+            return True
+    return False
+
+
 def scan_networks():
     try:
         r = _run(["nmcli", "-t", "-f", "SSID,SIGNAL", "device", "wifi", "list",
@@ -125,8 +139,13 @@ def stop_ap():
 
 
 def do_connect(ssid, password, country):
-    """Tear down the AP and join the chosen network (runs off the request thread)."""
-    time.sleep(1)
+    """Tear down the AP and join the chosen network (runs off the request thread).
+
+    On success: write the provisioned marker and exit(0) so systemd's
+    ExecStopPost restores the status agent (and the AP stays down). On failure:
+    bring the setup AP back so the user can try again with a corrected password.
+    """
+    time.sleep(1)                       # let the HTTP reply flush before the AP drops
     if country:
         for cmd in (["raspi-config", "nonint", "do_wifi_country", country],
                     ["iw", "reg", "set", country]):
@@ -134,18 +153,29 @@ def do_connect(ssid, password, country):
                 _run(cmd, timeout=15)
             except (OSError, subprocess.SubprocessError):
                 pass
+        time.sleep(3)
     stop_ap()
     try:
         _run(["rfkill", "unblock", "wifi"], timeout=10)
-        _run(connect_args(ssid, password), timeout=45)
+        _run(["nmcli", "device", "wifi", "rescan"], timeout=20)
     except (OSError, subprocess.SubprocessError):
         pass
+    time.sleep(4)
     try:
-        import os
-        os.makedirs("/var/lib/neurokairos", exist_ok=True)
-        open(MARKER, "w").close()
-    except OSError:
+        _run(["nmcli", "--wait", "30"] + connect_args(ssid, password)[1:], timeout=45)
+    except (OSError, subprocess.SubprocessError):
         pass
+    time.sleep(3)
+    if networked():
+        try:
+            os.makedirs("/var/lib/neurokairos", exist_ok=True)
+            open(MARKER, "w").close()
+        except OSError:
+            pass
+        print(f"nk-wifi-portal: joined '{ssid}', provisioned", flush=True)
+        os._exit(0)     # clean exit -> ExecStopPost restarts the status agent
+    print(f"nk-wifi-portal: could not join '{ssid}'; reopening setup AP", flush=True)
+    start_ap()
 
 
 # ---------------------------------------------------------------------------

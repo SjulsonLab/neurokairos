@@ -6,6 +6,9 @@ Documentation=https://github.com/SjulsonLab/neurokairos
 # built-in hotspot (which also serves DHCP on 10.42.0.1).
 After=NetworkManager.service
 Requires=NetworkManager.service
+# Don't flap forever if something else holds port 80.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -13,7 +16,12 @@ User=root
 # Lowest priority like every other helper; the RT IRIG-H sender preempts it.
 Nice=19
 CPUSchedulingPolicy=idle
+# The status agent owns port 80 on senders; free it for the captive page while
+# setup runs, and restore it whenever the portal stops (successful join exits 0,
+# or a crash) so the sender is reachable again on its normal network.
+ExecStartPre=-/usr/bin/systemctl stop nk-status-agent.service
 ExecStart=/usr/bin/python3 /usr/local/sbin/nk_wifi_portal.py
+ExecStopPost=-/usr/bin/systemctl start nk-status-agent.service
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

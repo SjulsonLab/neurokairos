@@ -143,6 +143,7 @@ def test_provision_moves_file_and_marks_on_success(ob, monkeypatch, tmp_path):
     cfg.write_text("country=US\nssid=Net\npassword=pw\n")
     calls = {}
     monkeypatch.setattr(ob, "set_country", lambda cc: calls.setdefault("cc", cc))
+    monkeypatch.setattr(ob, "wifi_rescan", lambda: None)
     monkeypatch.setattr(ob, "wifi_connect", lambda s, p: calls.setdefault("conn", (s, p)) or True)
     monkeypatch.setattr(ob, "networked", lambda: True)
     monkeypatch.setattr(ob, "mark_provisioned", lambda: calls.setdefault("marked", True))
@@ -168,6 +169,7 @@ def test_provision_no_mark_when_connect_fails(ob, monkeypatch, tmp_path):
     cfg.write_text("ssid=Net\npassword=pw\n")
     marked = MagicMock()
     monkeypatch.setattr(ob, "set_country", lambda cc: None)
+    monkeypatch.setattr(ob, "wifi_rescan", lambda: None)
     monkeypatch.setattr(ob, "wifi_connect", lambda s, p: False)
     monkeypatch.setattr(ob, "networked", lambda: False)
     monkeypatch.setattr(ob, "mark_provisioned", marked)
