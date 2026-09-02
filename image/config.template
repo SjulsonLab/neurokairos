@@ -14,8 +14,8 @@ KEYBOARD_LAYOUT='English (US)'
 TIMEZONE_DEFAULT='Etc/UTC'
 
 # Appliance defaults: ship a known user so the device is reachable out of the
-# box. The password is expired at first boot (see 05-appliance) so the user MUST
-# set a new one on first login. This is the documented default; change on first use.
+# box. A first-login prompt (see 05-appliance) makes the user set a new password
+# on first login. This is the documented default; change on first use.
 DISABLE_FIRST_BOOT_USER_RENAME=1
 FIRST_USER_NAME='neurokairos'
 FIRST_USER_PASS='neurokairos'

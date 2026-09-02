@@ -150,6 +150,7 @@ install -m 644 raspberry_pi/systemd/nk-status-agent.service "$agent/"
 app=/tmp/pi-gen/stage-neurokairos-common/05-appliance/files
 install -m 644 raspberry_pi/scripts/nk_console_issue.sh "$app/"
 install -m 644 raspberry_pi/scripts/nk_sanitize.sh "$app/"
+install -m 644 raspberry_pi/scripts/nk_first_login.sh "$app/"
 install -m 644 raspberry_pi/systemd/nk-console-issue.service "$app/"
 install -m 644 raspberry_pi/systemd/nk-console-issue.timer "$app/"
 
