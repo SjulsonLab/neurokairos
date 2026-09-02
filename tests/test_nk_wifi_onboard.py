@@ -225,3 +225,19 @@ def test_render_page_lists_ssids_and_escapes(portal):
 
 def test_render_page_shows_message(portal):
     assert "please choose" in portal.render_page([], "please choose").lower()
+
+
+# ---------------------------------------------------------------------------
+# portal: captive-portal host detection (redirect vs serve)
+# ---------------------------------------------------------------------------
+
+def test_gateway_host_true_with_and_without_port(portal):
+    assert portal.is_gateway_host("10.42.0.1")
+    assert portal.is_gateway_host("10.42.0.1:80")
+
+
+def test_gateway_host_false_for_os_probe_domains(portal):
+    # These are the hosts OSes probe; they must be redirected, not served 200.
+    for host in ("captive.apple.com", "connectivitycheck.gstatic.com",
+                 "www.msftconnecttest.com", "detectportal.firefox.com"):
+        assert not portal.is_gateway_host(host)

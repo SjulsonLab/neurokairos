@@ -26,6 +26,12 @@ AP_PASSWORD = "neurokairos"
 AP_CON = "nk-setup"
 MARKER = "/var/lib/neurokairos/wifi-provisioned"
 PORTAL_PORT = 80
+# NetworkManager's shared (hotspot) mode hands out this gateway and runs a
+# dnsmasq that reads dnsmasq-shared.d/. We drop a wildcard there so every DNS
+# name resolves to us — that's what makes phones' captive-portal probes hit this
+# server and auto-open the setup page (airplane-Wi-Fi behavior).
+GATEWAY = "10.42.0.1"
+CAPTIVE_DNS_CONF = "/etc/NetworkManager/dnsmasq-shared.d/nk-captive.conf"
 
 
 def _run(args, timeout=30):
@@ -58,6 +64,14 @@ def connect_args(ssid: str, password: str):
     if password:
         args += ["password", password]
     return args
+
+
+def is_gateway_host(host: str, gateway: str = GATEWAY) -> bool:
+    """True if the request's Host header targets our gateway (strip any :port).
+
+    A captive-portal probe (e.g. Host: captive.apple.com) is NOT the gateway, so
+    it gets redirected to the setup page; a real page load (Host: 10.42.0.1) is."""
+    return host.split(":", 1)[0] == gateway
 
 
 def render_page(ssids, message=""):
@@ -115,7 +129,27 @@ def scan_networks():
         return []
 
 
+def write_captive_dns():
+    """Make the hotspot's dnsmasq resolve every name to the gateway, so OS
+    captive-portal probes land on us. Written BEFORE the hotspot starts so
+    dnsmasq picks it up when the shared connection activates."""
+    try:
+        os.makedirs(os.path.dirname(CAPTIVE_DNS_CONF), exist_ok=True)
+        with open(CAPTIVE_DNS_CONF, "w") as f:
+            f.write("address=/#/%s\n" % GATEWAY)
+    except OSError as exc:
+        print(f"nk-wifi-portal: could not write captive DNS conf: {exc}", flush=True)
+
+
+def remove_captive_dns():
+    try:
+        os.remove(CAPTIVE_DNS_CONF)
+    except OSError:
+        pass
+
+
 def start_ap():
+    write_captive_dns()
     for cmd in (["iw", "reg", "set", "00"], ["rfkill", "unblock", "wifi"],
                 ["nmcli", "radio", "wifi", "on"]):
         try:
@@ -167,6 +201,7 @@ def do_connect(ssid, password, country):
         pass
     time.sleep(3)
     if networked():
+        remove_captive_dns()    # don't hijack DNS on any future shared connection
         try:
             os.makedirs("/var/lib/neurokairos", exist_ok=True)
             open(MARKER, "w").close()
@@ -192,8 +227,21 @@ def make_server(host="0.0.0.0", port=PORTAL_PORT):
             self.end_headers()
             self.wfile.write(enc)
 
+        def _redirect(self, location):
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
         def do_GET(self):  # noqa: N802
-            # Captive-portal friendliness: serve the setup page for any path.
+            # Captive-portal detection: probes arrive addressed to the OS's own
+            # check host (captive.apple.com, connectivitycheck.gstatic.com, …),
+            # which DNS-hijacks to us. Redirecting them (instead of returning the
+            # "Success"/204 the OS expects) makes it flag a portal and auto-open
+            # the setup page. A real load of http://10.42.0.1/ serves the form.
+            if not is_gateway_host(self.headers.get("Host", "")):
+                self._redirect(f"http://{GATEWAY}/")
+                return
             self._html(render_page(scan_networks()))
 
         def do_POST(self):  # noqa: N802

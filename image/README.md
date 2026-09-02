@@ -34,8 +34,10 @@ The sender picks a network automatically, in this order — you only need **one*
    already-running card.)
 3. **Setup hotspot (no cable, no file).** If there's no ethernet and no config
    file, the sender broadcasts a Wi-Fi network **`NeuroKairos-Setup`** (password
-   `neurokairos`). Join it from a phone/laptop, open **`http://10.42.0.1`**, pick
-   your network + enter the password and country, and submit. The hotspot then
+   `neurokairos`). Join it from a phone/laptop and the setup page **pops up
+   automatically** (captive portal, like airport Wi-Fi); if it doesn't, open
+   **`http://10.42.0.1`** manually. Pick your network + enter the password and
+   country, and submit. The hotspot then
    disappears as the sender joins your Wi-Fi — reconnect your device to your
    normal network and find the sender at `http://neurokairos-sender.local`. Once
    configured this way it won't re-open the hotspot on its own.
