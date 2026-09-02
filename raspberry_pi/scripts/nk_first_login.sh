@@ -1,13 +1,13 @@
 # NeuroKairos: force a password change on the first interactive login.
 #
 # Sourced from /etc/profile.d. We deliberately do NOT use account expiry
-# (`chage -d 0`) for this: over SSH that makes PAM re-prompt for the *current*
-# password (which you just typed to get in) and then makes OpenSSH drop the
-# connection right after the change. Instead we run `passwd` as root via sudo —
-# so it asks only for the new password (twice) and the session continues.
+# (`chage -d 0`): over SSH that re-prompts for the *current* password (which you
+# just typed to get in) and then makes OpenSSH drop the connection right after
+# the change. Instead we invoke a small root helper via a scoped NOPASSWD sudo
+# rule — so it asks only for the new password (twice) and the session continues.
 #
-# Guarded by a marker file that the image ships with and nk_sanitize.sh restores;
-# once the password is set the marker is removed and this becomes a no-op.
+# Guarded by a marker file the image ships with (and nk_sanitize.sh restores);
+# once the password is set the helper removes the marker and this is a no-op.
 
 if [ -t 0 ] && [ -f /var/lib/neurokairos/default-password ] && [ "$(id -un)" = "neurokairos" ]; then
     echo
@@ -15,13 +15,11 @@ if [ -t 0 ] && [ -f /var/lib/neurokairos/default-password ] && [ "$(id -un)" = "
     echo "For security, set a new password for user 'neurokairos' (required)."
     echo
 
-    # Prefer running passwd as root (no current-password prompt, no disconnect).
-    # Fall back to a normal passwd only if passwordless sudo isn't available.
-    if sudo -n true 2>/dev/null; then
-        until sudo -n passwd "$(id -un)"; do
-            echo "Password not changed — it is required. Please try again."
-        done
-        sudo -n rm -f /var/lib/neurokairos/default-password
+    # Use the scoped NOPASSWD helper if the sudoers rule is in place (checked
+    # without prompting); otherwise fall back to a plain passwd so the user is
+    # never locked out (that path asks for the current password once).
+    if sudo -n -l /usr/local/sbin/nk_set_password >/dev/null 2>&1; then
+        sudo -n /usr/local/sbin/nk_set_password
     else
         until passwd; do
             echo "Password not changed — it is required. Please try again."
