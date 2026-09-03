@@ -32,6 +32,10 @@ PORTAL_PORT = 80
 # server and auto-open the setup page (airplane-Wi-Fi behavior).
 GATEWAY = "10.42.0.1"
 CAPTIVE_DNS_CONF = "/etc/NetworkManager/dnsmasq-shared.d/nk-captive.conf"
+# Message shown on the next page load — e.g. after a failed join so the user
+# knows to re-check the password (a wrong password just reopens the AP silently
+# otherwise). Single-process server, so a module global is fine.
+PORTAL_STATUS = {"msg": ""}
 
 
 def _run(args, timeout=30):
@@ -246,6 +250,14 @@ def do_connect(ssid, password, country):
         print(f"nk-wifi-portal: joined '{ssid}', provisioned", flush=True)
         os._exit(0)     # clean exit -> ExecStopPost restarts the status agent
     print(f"nk-wifi-portal: could not join '{ssid}'; reopening setup AP", flush=True)
+    # Drop the just-created profile so a corrected retry isn't blocked by the
+    # cached wrong password, and tell the user what happened on the next load.
+    try:
+        _run(["nmcli", "connection", "delete", ssid], timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    PORTAL_STATUS["msg"] = (f"Couldn't connect to '{ssid}'. Double-check the "
+                            "password and try again.")
     start_ap()
 
 
@@ -278,7 +290,7 @@ def make_server(host="0.0.0.0", port=PORTAL_PORT):
             if not is_gateway_host(self.headers.get("Host", "")):
                 self._redirect(f"http://{GATEWAY}/")
                 return
-            self._html(render_page(scan_networks()))
+            self._html(render_page(scan_networks(), PORTAL_STATUS["msg"]))
 
         def do_POST(self):  # noqa: N802
             n = int(self.headers.get("Content-Length", "0"))
@@ -287,6 +299,7 @@ def make_server(host="0.0.0.0", port=PORTAL_PORT):
                     or form.get("ssid", [""])[0].strip())
             password = form.get("password", [""])[0]
             country = form.get("country", [""])[0].strip().upper()
+            PORTAL_STATUS["msg"] = ""       # clear any prior error on a new attempt
             if not ssid:
                 self._html(render_page(scan_networks(), "Please choose a network."))
                 return
