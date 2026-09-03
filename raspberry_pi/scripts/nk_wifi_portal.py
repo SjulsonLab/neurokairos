@@ -148,7 +148,32 @@ def remove_captive_dns():
         pass
 
 
-def start_ap():
+def wifi_device_ready() -> bool:
+    """True once NetworkManager sees a wifi device that isn't 'unavailable' or
+    'unmanaged'. On first boot the radio is rfkill-blocked with no regdomain, so
+    the device sits 'unavailable' for a moment after NM starts — creating the
+    hotspot before then silently fails (this is why the AP only appeared after a
+    reboot)."""
+    try:
+        r = _run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device", "status"], timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    for line in r.stdout.splitlines():
+        parts = line.split(":")
+        if len(parts) >= 3 and parts[1] == "wifi" and parts[2] not in ("unavailable", "unmanaged"):
+            return True
+    return False
+
+
+def ap_active() -> bool:
+    try:
+        r = _run(["nmcli", "-t", "-f", "NAME", "connection", "show", "--active"], timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return any(line.strip() == AP_CON for line in r.stdout.splitlines())
+
+
+def start_ap() -> bool:
     write_captive_dns()
     for cmd in (["iw", "reg", "set", "00"], ["rfkill", "unblock", "wifi"],
                 ["nmcli", "radio", "wifi", "on"]):
@@ -156,11 +181,22 @@ def start_ap():
             _run(cmd, timeout=10)
         except (OSError, subprocess.SubprocessError):
             pass
-    try:
-        _run(["nmcli", "device", "wifi", "hotspot", "con-name", AP_CON,
-              "ssid", AP_SSID, "password", AP_PASSWORD], timeout=30)
-    except (OSError, subprocess.SubprocessError) as exc:
-        print(f"nk-wifi-portal: could not start AP: {exc}", flush=True)
+    # Wait for the wifi device to become available, then keep trying to create
+    # the hotspot until it's actually active — first boot needs a few seconds.
+    for attempt in range(1, 7):
+        if wifi_device_ready():
+            try:
+                _run(["nmcli", "device", "wifi", "hotspot", "con-name", AP_CON,
+                      "ssid", AP_SSID, "password", AP_PASSWORD], timeout=30)
+            except (OSError, subprocess.SubprocessError) as exc:
+                print(f"nk-wifi-portal: hotspot attempt {attempt} error: {exc}", flush=True)
+            if ap_active():
+                print(f"nk-wifi-portal: setup AP up (attempt {attempt})", flush=True)
+                return True
+        print(f"nk-wifi-portal: wifi not ready yet, retrying ({attempt}/6)", flush=True)
+        time.sleep(5)
+    print("nk-wifi-portal: could not bring up setup AP", flush=True)
+    return False
 
 
 def stop_ap():
@@ -269,7 +305,10 @@ def make_server(host="0.0.0.0", port=PORTAL_PORT):
 
 
 def main():
-    start_ap()
+    if not start_ap():
+        # Radio wasn't ready this time; exit non-zero so systemd restarts us to
+        # retry in a few seconds, instead of leaving a dead portal until reboot.
+        raise SystemExit(1)
     make_server().serve_forever()
 
 
